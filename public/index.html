@@ -29,6 +29,9 @@
     padding: 14px 18px;
     border-bottom: 1px solid var(--line);
     flex-shrink: 0;
+    transition: max-height 0.35s ease, opacity 0.25s ease, padding 0.35s ease;
+    max-height: 200px;
+    overflow: hidden;
   }
   .title { font-size: 15px; font-weight: 600; letter-spacing: 0.2px; }
   .status {
@@ -80,6 +83,21 @@
     border-top: 1px solid var(--line);
     flex-shrink: 0;
     background: var(--panel);
+    transition: max-height 0.35s ease, opacity 0.25s ease, padding 0.35s ease;
+    max-height: 260px;
+    overflow: hidden;
+  }
+
+  /* Fullscreen auto-hide: header/footer collapse away after a few seconds of
+     inactivity so the video fills the screen, and fade back in on any
+     mouse move, tap, or keypress. */
+  body.chrome-hidden header,
+  body.chrome-hidden footer {
+    max-height: 0;
+    opacity: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+    border-color: transparent;
   }
   select {
     background: var(--bg); color: var(--text);
@@ -115,8 +133,8 @@
 <main>
   <video id="remote" autoplay playsinline></video>
   <div class="placeholder" id="placeholder">
-    <div class="big">Pick your camera and mic, then tap Start Call</div>
-    <div class="small" id="placeholderSub">Send this same page's link to the other side. Whoever opens it second connects the call automatically.</div>
+    <div class="big">Connecting…</div>
+    <div class="small" id="placeholderSub">This starts automatically. Send this same link to the other side — whoever opens it second connects the call.</div>
   </div>
   <video id="local" autoplay playsinline muted></video>
 </main>
@@ -129,6 +147,7 @@
   <div class="controls-row">
     <button id="muteBtn">Mute</button>
     <button id="camBtn">Camera off</button>
+    <button id="fullscreenBtn">Fullscreen</button>
     <button id="callBtn" class="primary">Start Call</button>
   </div>
 </footer>
@@ -141,11 +160,15 @@
   const micSelect = document.getElementById('micSelect');
   const muteBtn = document.getElementById('muteBtn');
   const camBtn = document.getElementById('camBtn');
+  const fullscreenBtn = document.getElementById('fullscreenBtn');
   const callBtn = document.getElementById('callBtn');
   const statusDot = document.getElementById('statusDot');
   const statusText = document.getElementById('statusText');
   const placeholder = document.getElementById('placeholder');
   const placeholderSub = document.getElementById('placeholderSub');
+
+  const LS_CAMERA = 'trainingCall:cameraId';
+  const LS_MIC = 'trainingCall:micId';
 
   const params = new URLSearchParams(location.search);
   const room = params.get('room') || 'gym-session';
@@ -176,8 +199,8 @@
 
   async function listDevices() {
     const devices = await navigator.mediaDevices.enumerateDevices();
-    const prevCam = cameraSelect.value;
-    const prevMic = micSelect.value;
+    const prevCam = cameraSelect.value || localStorage.getItem(LS_CAMERA);
+    const prevMic = micSelect.value || localStorage.getItem(LS_MIC);
     cameraSelect.innerHTML = '';
     micSelect.innerHTML = '';
     let camCount = 0, micCount = 0;
@@ -196,8 +219,8 @@
         micSelect.appendChild(opt);
       }
     });
-    if (prevCam) cameraSelect.value = prevCam;
-    if (prevMic) micSelect.value = prevMic;
+    if (prevCam && [...cameraSelect.options].some((o) => o.value === prevCam)) cameraSelect.value = prevCam;
+    if (prevMic && [...micSelect.options].some((o) => o.value === prevMic)) micSelect.value = prevMic;
   }
 
   async function startLocalStream() {
@@ -235,6 +258,9 @@
       tempStream.getTracks().forEach((t) => t.stop());
       await listDevices();
       navigator.mediaDevices.ondevicechange = listDevices;
+      // Opening the page is meant to be the only step — start the call
+      // automatically using whichever camera/mic was remembered from last time.
+      startCallFlow();
     } catch (err) {
       setPlaceholder('Camera or microphone blocked', 'Allow camera and microphone access for this page in your browser settings, then reload.', true);
       setStatus('Permission needed', 'bad');
@@ -352,29 +378,73 @@
     pendingCandidates = [];
   }
 
-  callBtn.addEventListener('click', async () => {
-    if (!inCall) {
-      inCall = true;
-      callBtn.textContent = 'End Call';
-      callBtn.classList.add('end');
-      setPlaceholder('Waiting to connect', 'Waiting for the other side to join…', true);
-      try {
-        if (!localStream) await startLocalStream();
-        connectSignaling();
-      } catch (err) {
-        setStatus('Could not access camera/mic', 'bad');
-        inCall = false;
-        callBtn.textContent = 'Start Call';
-        callBtn.classList.remove('end');
-      }
-    } else {
+  async function startCallFlow() {
+    if (inCall) return;
+    inCall = true;
+    callBtn.textContent = 'End Call';
+    callBtn.classList.add('end');
+    setPlaceholder('Connecting…', 'Waiting for the other side to join…', true);
+    try {
+      if (!localStream) await startLocalStream();
+      connectSignaling();
+    } catch (err) {
+      setStatus('Could not access camera/mic', 'bad');
       inCall = false;
       callBtn.textContent = 'Start Call';
       callBtn.classList.remove('end');
-      teardownPeerConnection();
-      if (ws) { ws.close(); ws = null; }
-      setStatus('Not connected', '');
-      setPlaceholder('Call ended', 'Tap Start Call to begin a new session.', true);
+    }
+  }
+
+  function endCallFlow() {
+    inCall = false;
+    callBtn.textContent = 'Start Call';
+    callBtn.classList.remove('end');
+    teardownPeerConnection();
+    if (ws) { ws.close(); ws = null; }
+    setStatus('Not connected', '');
+    setPlaceholder('Call ended', 'Tap Start Call to begin a new session.', true);
+  }
+
+  callBtn.addEventListener('click', () => {
+    if (!inCall) startCallFlow(); else endCallFlow();
+  });
+
+  // --- Fullscreen + auto-hiding controls -----------------------------------
+  // Goal: while in fullscreen, the header and footer fade away after a few
+  // seconds so the video fills the whole screen, then reappear the moment
+  // the mouse moves, the screen is tapped, or a key is pressed.
+  let hideTimer = null;
+
+  function revealChrome() {
+    document.body.classList.remove('chrome-hidden');
+    clearTimeout(hideTimer);
+    if (document.fullscreenElement) {
+      hideTimer = setTimeout(() => {
+        document.body.classList.add('chrome-hidden');
+      }, 3000);
+    }
+  }
+
+  document.addEventListener('mousemove', revealChrome);
+  document.addEventListener('touchstart', revealChrome);
+  document.addEventListener('keydown', revealChrome);
+
+  document.addEventListener('fullscreenchange', () => {
+    if (document.fullscreenElement) {
+      fullscreenBtn.textContent = 'Exit Fullscreen';
+      revealChrome();
+    } else {
+      fullscreenBtn.textContent = 'Fullscreen';
+      clearTimeout(hideTimer);
+      document.body.classList.remove('chrome-hidden');
+    }
+  });
+
+  fullscreenBtn.addEventListener('click', () => {
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen().catch(() => {});
+    } else {
+      document.exitFullscreen();
     }
   });
 
@@ -396,8 +466,14 @@
     camBtn.classList.toggle('active-off', !track.enabled);
   });
 
-  cameraSelect.addEventListener('change', () => { if (localStream) startLocalStream(); });
-  micSelect.addEventListener('change', () => { if (localStream) startLocalStream(); });
+  cameraSelect.addEventListener('change', () => {
+    localStorage.setItem(LS_CAMERA, cameraSelect.value);
+    if (localStream) startLocalStream();
+  });
+  micSelect.addEventListener('change', () => {
+    localStorage.setItem(LS_MIC, micSelect.value);
+    if (localStream) startLocalStream();
+  });
 
   init();
 })();

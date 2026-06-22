@@ -83,6 +83,76 @@ be fine). If it happens consistently, the fix is adding a TURN server as a
 relay fallback — let me know and we can add one (a free-tier TURN service
 like Metered.ca would slot in with about 5 lines of code).
 
+## Applying this update (you already have this deployed on Render)
+
+Since the app is already live, you don't need to redo the GitHub/Render
+setup — just replace the updated files and push:
+
+1. Copy the new `public/index.html`, `launch-training-call.sh`, and
+   `TrainingCall.desktop` from this update into your existing
+   `~/training-call/webrtc-app` folder, overwriting the old `index.html`.
+
+2. From inside that folder:
+   ```
+   git add .
+   git commit -m "add fullscreen mode and one-step auto-start"
+   git push
+   ```
+
+3. Render watches your GitHub repo and redeploys automatically within
+   about a minute of the push — no need to touch the Render dashboard.
+   You can confirm it picked up the change by checking the deploy log on
+   Render for a new "Live" entry with your latest commit message.
+
+## What's new: one-step startup and fullscreen
+
+The app now does two extra things automatically:
+
+- **Remembers your camera and mic.** Once you've picked the EMEET PIXY from
+  the dropdown one time, your browser remembers it (saved locally on that
+  PC) and auto-selects it every time after.
+- **Starts the call automatically.** The moment the page loads and camera
+  permission is already granted, it connects on its own — no need to tap
+  "Start Call" each time. (You'd still tap it once, manually, after ending
+  a call, to start a new one.)
+
+There's also a **Fullscreen** button. Tapping it fills the entire screen
+with the video and fades away the header/footer controls after a few
+seconds of no mouse movement — move the mouse, tap the screen, or press
+any key to bring the controls back.
+
+## Setting up one-click startup on the gym PC
+
+Two files came with this update: `launch-training-call.sh` and
+`TrainingCall.desktop`. Together they turn "open browser, type URL" into a
+single double-click.
+
+1. **Copy the launcher script into your project folder** (if it isn't
+   already there) and make it executable:
+   ```
+   chmod +x ~/training-call/webrtc-app/launch-training-call.sh
+   ```
+
+2. **Put the desktop icon on your Desktop:**
+   ```
+   cp ~/training-call/webrtc-app/TrainingCall.desktop ~/Desktop/
+   chmod +x ~/Desktop/TrainingCall.desktop
+   ```
+
+3. The first time you double-click it, Linux Mint will likely ask whether
+   to trust it — right-click the icon and choose **"Allow Launching"** if
+   double-clicking doesn't immediately work, then try again.
+
+From then on: double-click the **Training Call** icon on your Desktop, and
+it opens straight into a full-screen call window with your camera/mic
+already selected and the call already connecting. That's the entire
+startup procedure.
+
+(If the icon shows the wrong username/path for some reason — for example,
+if you ever set this up under a different account — open
+`TrainingCall.desktop` in a text editor and fix the `Exec=` line to point
+at the correct path.)
+
 ## Running it locally first (optional, to test before deploying)
 
 ```

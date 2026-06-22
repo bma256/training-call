@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Training Call
+Comment=Start a video call with Maria
+Exec=/home/gym/training-call/webrtc-app/launch-training-call.sh
+Icon=camera-web
+Terminal=false
+Categories=Network;

@@ -3,6 +3,9 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 <title>Training Call</title>
 <style>
   :root {
@@ -441,6 +444,20 @@
   });
 
   fullscreenBtn.addEventListener('click', () => {
+    const supportsPageFullscreen = document.fullscreenEnabled &&
+      typeof document.documentElement.requestFullscreen === 'function';
+
+    if (!supportsPageFullscreen) {
+      // iPhone/iPad Safari (and any iOS browser, which all use the same
+      // engine) only allows the Fullscreen API on <video> elements, not
+      // the whole page — this is an Apple platform restriction, not
+      // something fixable from here. The real fix on iOS is adding this
+      // page to the Home Screen, which makes Safari hide its own address
+      // bar and controls automatically.
+      alert('Fullscreen isn\'t available for whole pages in this browser (an iPhone/iPad limitation).\n\nFor a true fullscreen view here: tap the Share icon, then "Add to Home Screen". Opening the call from that Home Screen icon instead of the browser gives you fullscreen automatically, every time.');
+      return;
+    }
+
     if (!document.fullscreenElement) {
       document.documentElement.requestFullscreen().catch(() => {});
     } else {

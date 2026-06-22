@@ -121,6 +121,20 @@ with the video and fades away the header/footer controls after a few
 seconds of no mouse movement — move the mouse, tap the screen, or press
 any key to bring the controls back.
 
+## A note on Fullscreen and iPhone
+
+The Fullscreen button works fully on the gym PC (any Chromium/Firefox
+desktop browser). On iPhone, it won't do anything when tapped — this is an
+Apple platform restriction, not a bug: iOS only allows the Fullscreen API
+on `<video>` elements, never on a whole page, across every browser on
+iPhone (they're all required to use Safari's engine underneath).
+
+The real fix on iPhone is **adding the page to the Home Screen**: in
+Safari, tap the Share icon → "Add to Home Screen". Opening the call from
+that Home Screen icon (instead of from inside Safari) makes iOS hide the
+address bar and browser chrome automatically, every time — true
+fullscreen, no button needed. Worth setting up once on Maria's phone.
+
 ## Setting up one-click startup on the gym PC
 
 Two files came with this update: `launch-training-call.sh` and

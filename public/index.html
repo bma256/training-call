@@ -1,0 +1,406 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Training Call</title>
+<style>
+  :root {
+    --bg: #0b0d10;
+    --panel: #14171c;
+    --line: #232830;
+    --text: #e8eaed;
+    --muted: #8b93a1;
+    --accent: #4fd1c5;
+    --danger: #e0556f;
+    --warn: #e3b341;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    overscroll-behavior: none;
+  }
+  body { display: flex; flex-direction: column; height: 100vh; }
+
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--line);
+    flex-shrink: 0;
+  }
+  .title { font-size: 15px; font-weight: 600; letter-spacing: 0.2px; }
+  .status {
+    font-size: 13px; color: var(--muted);
+    display: flex; align-items: center; gap: 6px;
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex-shrink: 0; }
+  .dot.live { background: var(--accent); animation: pulse 2s infinite; }
+  .dot.warn { background: var(--warn); }
+  .dot.bad { background: var(--danger); }
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(79,209,197,0.5); }
+    70% { box-shadow: 0 0 0 6px rgba(79,209,197,0); }
+    100% { box-shadow: 0 0 0 0 rgba(79,209,197,0); }
+  }
+
+  main {
+    position: relative;
+    flex: 1;
+    background: #000;
+    overflow: hidden;
+    min-height: 0;
+  }
+  video#remote {
+    width: 100%; height: 100%; object-fit: contain; background: #000;
+  }
+  video#local {
+    position: absolute;
+    width: 27%;
+    max-width: 220px;
+    min-width: 110px;
+    right: 14px; bottom: 14px;
+    border-radius: 10px;
+    border: 1px solid var(--line);
+    background: #000;
+    transform: scaleX(-1);
+  }
+  .placeholder {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 10px; color: var(--muted); text-align: center; padding: 0 24px;
+  }
+  .placeholder .big { font-size: 16px; color: var(--text); }
+  .placeholder .small { font-size: 13px; max-width: 320px; }
+
+  footer {
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
+    padding: 14px 16px calc(14px + env(safe-area-inset-bottom));
+    border-top: 1px solid var(--line);
+    flex-shrink: 0;
+    background: var(--panel);
+  }
+  select {
+    background: var(--bg); color: var(--text);
+    border: 1px solid var(--line); border-radius: 8px;
+    padding: 8px 10px; font-size: 13px; max-width: 170px;
+  }
+  button {
+    border: 1px solid var(--line); background: var(--bg); color: var(--text);
+    border-radius: 10px; padding: 10px 16px; font-size: 14px; font-weight: 500;
+    cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); }
+  button.active-off { background: rgba(224,85,111,0.15); border-color: var(--danger); color: var(--danger); }
+  button.primary { background: var(--accent); color: #06201d; border-color: var(--accent); }
+  button.primary.end { background: var(--danger); border-color: var(--danger); color: #fff; }
+  button:disabled { opacity: 0.4; cursor: default; }
+
+  .controls-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; justify-content: center; }
+
+  @media (max-width: 520px) {
+    select { max-width: 130px; font-size: 12px; }
+    button { padding: 9px 12px; font-size: 13px; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="title">Training Call</div>
+  <div class="status"><span class="dot" id="statusDot"></span><span id="statusText">Not connected</span></div>
+</header>
+
+<main>
+  <video id="remote" autoplay playsinline></video>
+  <div class="placeholder" id="placeholder">
+    <div class="big">Pick your camera and mic, then tap Start Call</div>
+    <div class="small" id="placeholderSub">Send this same page's link to the other side. Whoever opens it second connects the call automatically.</div>
+  </div>
+  <video id="local" autoplay playsinline muted></video>
+</main>
+
+<footer>
+  <div class="controls-row">
+    <select id="cameraSelect" title="Camera"></select>
+    <select id="micSelect" title="Microphone"></select>
+  </div>
+  <div class="controls-row">
+    <button id="muteBtn">Mute</button>
+    <button id="camBtn">Camera off</button>
+    <button id="callBtn" class="primary">Start Call</button>
+  </div>
+</footer>
+
+<script>
+(() => {
+  const remoteVideo = document.getElementById('remote');
+  const localVideo = document.getElementById('local');
+  const cameraSelect = document.getElementById('cameraSelect');
+  const micSelect = document.getElementById('micSelect');
+  const muteBtn = document.getElementById('muteBtn');
+  const camBtn = document.getElementById('camBtn');
+  const callBtn = document.getElementById('callBtn');
+  const statusDot = document.getElementById('statusDot');
+  const statusText = document.getElementById('statusText');
+  const placeholder = document.getElementById('placeholder');
+  const placeholderSub = document.getElementById('placeholderSub');
+
+  const params = new URLSearchParams(location.search);
+  const room = params.get('room') || 'gym-session';
+
+  // Google's public STUN servers — free, no signup, fine for most home networks.
+  // If a connection ever fails to establish, that's the signal we'd need to add a TURN server.
+  const ICE_SERVERS = [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' }
+  ];
+
+  let localStream = null;
+  let pc = null;
+  let ws = null;
+  let inCall = false;
+  let pendingCandidates = [];
+
+  function setStatus(text, mode) {
+    statusText.textContent = text;
+    statusDot.className = 'dot' + (mode ? ' ' + mode : '');
+  }
+
+  function setPlaceholder(big, small, show) {
+    placeholder.style.display = show ? 'flex' : 'none';
+    if (big !== null) placeholder.querySelector('.big').textContent = big;
+    if (small !== undefined && small !== null) placeholderSub.textContent = small;
+  }
+
+  async function listDevices() {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const prevCam = cameraSelect.value;
+    const prevMic = micSelect.value;
+    cameraSelect.innerHTML = '';
+    micSelect.innerHTML = '';
+    let camCount = 0, micCount = 0;
+    devices.forEach((d) => {
+      if (d.kind === 'videoinput') {
+        camCount++;
+        const opt = document.createElement('option');
+        opt.value = d.deviceId;
+        opt.textContent = d.label || `Camera ${camCount}`;
+        cameraSelect.appendChild(opt);
+      } else if (d.kind === 'audioinput') {
+        micCount++;
+        const opt = document.createElement('option');
+        opt.value = d.deviceId;
+        opt.textContent = d.label || `Microphone ${micCount}`;
+        micSelect.appendChild(opt);
+      }
+    });
+    if (prevCam) cameraSelect.value = prevCam;
+    if (prevMic) micSelect.value = prevMic;
+  }
+
+  async function startLocalStream() {
+    const videoId = cameraSelect.value || undefined;
+    const audioId = micSelect.value || undefined;
+    const constraints = {
+      video: videoId ? { deviceId: { exact: videoId } } : true,
+      audio: audioId ? { deviceId: { exact: audioId } } : true
+    };
+
+    const newStream = await navigator.mediaDevices.getUserMedia(constraints);
+
+    if (localStream) {
+      localStream.getTracks().forEach((t) => t.stop());
+    }
+    localStream = newStream;
+    localVideo.srcObject = localStream;
+
+    if (pc) {
+      const videoTrack = localStream.getVideoTracks()[0];
+      const audioTrack = localStream.getAudioTracks()[0];
+      const senders = pc.getSenders();
+      const vSender = senders.find((s) => s.track && s.track.kind === 'video');
+      const aSender = senders.find((s) => s.track && s.track.kind === 'audio');
+      if (vSender && videoTrack) vSender.replaceTrack(videoTrack);
+      if (aSender && audioTrack) aSender.replaceTrack(audioTrack);
+    }
+  }
+
+  async function init() {
+    try {
+      // Request permission once with defaults so device labels become visible,
+      // then list devices properly.
+      const tempStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      tempStream.getTracks().forEach((t) => t.stop());
+      await listDevices();
+      navigator.mediaDevices.ondevicechange = listDevices;
+    } catch (err) {
+      setPlaceholder('Camera or microphone blocked', 'Allow camera and microphone access for this page in your browser settings, then reload.', true);
+      setStatus('Permission needed', 'bad');
+    }
+  }
+
+  function wsUrl() {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${proto}//${location.host}?room=${encodeURIComponent(room)}`;
+  }
+
+  function connectSignaling() {
+    ws = new WebSocket(wsUrl());
+
+    ws.onopen = () => {
+      setStatus('Waiting for the other side to join…', 'warn');
+    };
+
+    ws.onmessage = async (event) => {
+      const msg = JSON.parse(event.data);
+
+      if (msg.type === 'joined') {
+        if (msg.peers === 2) {
+          await createPeerConnection();
+          await makeOffer();
+        }
+      } else if (msg.type === 'peer-joined') {
+        setStatus('Other side joined — connecting…', 'warn');
+        if (!pc) await createPeerConnection();
+      } else if (msg.type === 'offer') {
+        if (!pc) await createPeerConnection();
+        await pc.setRemoteDescription(new RTCSessionDescription(msg));
+        await flushPendingCandidates();
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        send({ type: 'answer', sdp: answer.sdp });
+      } else if (msg.type === 'answer') {
+        await pc.setRemoteDescription(new RTCSessionDescription(msg));
+        await flushPendingCandidates();
+      } else if (msg.type === 'candidate') {
+        if (pc && pc.remoteDescription) {
+          try { await pc.addIceCandidate(new RTCIceCandidate(msg.candidate)); } catch (e) {}
+        } else {
+          pendingCandidates.push(msg.candidate);
+        }
+      } else if (msg.type === 'peer-left') {
+        setStatus('Other side disconnected', 'warn');
+        setPlaceholder('Call ended', 'The other side left. Tap Start Call to begin a new session.', true);
+        teardownPeerConnection();
+      } else if (msg.type === 'full') {
+        setStatus('Room already has two people', 'bad');
+        setPlaceholder('Call already in progress', 'This link is already connected on two devices.', true);
+      }
+    };
+
+    ws.onclose = () => {
+      if (inCall) {
+        setStatus('Signaling lost — retrying…', 'bad');
+        setTimeout(() => { if (inCall) connectSignaling(); }, 2000);
+      }
+    };
+
+    ws.onerror = () => {
+      setStatus('Connection error', 'bad');
+    };
+  }
+
+  function send(msg) {
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
+  }
+
+  async function flushPendingCandidates() {
+    for (const c of pendingCandidates) {
+      try { await pc.addIceCandidate(new RTCIceCandidate(c)); } catch (e) {}
+    }
+    pendingCandidates = [];
+  }
+
+  async function createPeerConnection() {
+    pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+
+    localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
+
+    pc.onicecandidate = (event) => {
+      if (event.candidate) send({ type: 'candidate', candidate: event.candidate });
+    };
+
+    pc.ontrack = (event) => {
+      remoteVideo.srcObject = event.streams[0];
+      setPlaceholder(null, null, false);
+    };
+
+    pc.onconnectionstatechange = () => {
+      if (!pc) return;
+      if (pc.connectionState === 'connected') {
+        setStatus('Connected', 'live');
+      } else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
+        setStatus('Connection lost', 'bad');
+        setPlaceholder('Connection lost', 'Trying to reconnect, or tap Start Call again.', true);
+      } else if (pc.connectionState === 'connecting') {
+        setStatus('Connecting…', 'warn');
+      }
+    };
+  }
+
+  async function makeOffer() {
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    send({ type: 'offer', sdp: offer.sdp });
+  }
+
+  function teardownPeerConnection() {
+    if (pc) { pc.close(); pc = null; }
+    remoteVideo.srcObject = null;
+    pendingCandidates = [];
+  }
+
+  callBtn.addEventListener('click', async () => {
+    if (!inCall) {
+      inCall = true;
+      callBtn.textContent = 'End Call';
+      callBtn.classList.add('end');
+      setPlaceholder('Waiting to connect', 'Waiting for the other side to join…', true);
+      try {
+        if (!localStream) await startLocalStream();
+        connectSignaling();
+      } catch (err) {
+        setStatus('Could not access camera/mic', 'bad');
+        inCall = false;
+        callBtn.textContent = 'Start Call';
+        callBtn.classList.remove('end');
+      }
+    } else {
+      inCall = false;
+      callBtn.textContent = 'Start Call';
+      callBtn.classList.remove('end');
+      teardownPeerConnection();
+      if (ws) { ws.close(); ws = null; }
+      setStatus('Not connected', '');
+      setPlaceholder('Call ended', 'Tap Start Call to begin a new session.', true);
+    }
+  });
+
+  muteBtn.addEventListener('click', () => {
+    if (!localStream) return;
+    const track = localStream.getAudioTracks()[0];
+    if (!track) return;
+    track.enabled = !track.enabled;
+    muteBtn.textContent = track.enabled ? 'Mute' : 'Unmute';
+    muteBtn.classList.toggle('active-off', !track.enabled);
+  });
+
+  camBtn.addEventListener('click', () => {
+    if (!localStream) return;
+    const track = localStream.getVideoTracks()[0];
+    if (!track) return;
+    track.enabled = !track.enabled;
+    camBtn.textContent = track.enabled ? 'Camera on' : 'Camera off';
+    camBtn.classList.toggle('active-off', !track.enabled);
+  });
+
+  cameraSelect.addEventListener('change', () => { if (localStream) startLocalStream(); });
+  micSelect.addEventListener('change', () => { if (localStream) startLocalStream(); });
+
+  init();
+})();
+</script>
+</body>
+</html>

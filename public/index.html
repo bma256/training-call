@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
@@ -30,6 +30,9 @@
   header {
     display: flex; align-items: center; justify-content: space-between;
     padding: 14px 18px;
+    padding-top: calc(14px + env(safe-area-inset-top));
+    padding-left: calc(18px + env(safe-area-inset-left));
+    padding-right: calc(18px + env(safe-area-inset-right));
     border-bottom: 1px solid var(--line);
     flex-shrink: 0;
     transition: max-height 0.35s ease, opacity 0.25s ease, padding 0.35s ease;
@@ -66,7 +69,8 @@
     width: 27%;
     max-width: 220px;
     min-width: 110px;
-    right: 14px; bottom: 14px;
+    right: calc(14px + env(safe-area-inset-right));
+    bottom: calc(14px + env(safe-area-inset-bottom));
     border-radius: 10px;
     border: 1px solid var(--line);
     background: #000;
@@ -83,6 +87,8 @@
   footer {
     display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
     padding: 14px 16px calc(14px + env(safe-area-inset-bottom));
+    padding-left: calc(16px + env(safe-area-inset-left));
+    padding-right: calc(16px + env(safe-area-inset-right));
     border-top: 1px solid var(--line);
     flex-shrink: 0;
     background: var(--panel);
@@ -172,6 +178,7 @@
 
   const LS_CAMERA = 'trainingCall:cameraId';
   const LS_MIC = 'trainingCall:micId';
+  const LS_HAS_CONNECTED = 'trainingCall:hasConnectedBefore';
 
   const params = new URLSearchParams(location.search);
   const room = params.get('room') || 'gym-session';
@@ -188,6 +195,10 @@
   let ws = null;
   let inCall = false;
   let pendingCandidates = [];
+  let amCaller = false; // only the caller initiates ICE restarts, to avoid both sides colliding
+  let disconnectTimer = null;
+  let iceRestartAttempts = 0;
+  const MAX_ICE_RESTARTS = 4;
 
   function setStatus(text, mode) {
     statusText.textContent = text;
@@ -261,9 +272,15 @@
       tempStream.getTracks().forEach((t) => t.stop());
       await listDevices();
       navigator.mediaDevices.ondevicechange = listDevices;
-      // Opening the page is meant to be the only step — start the call
-      // automatically using whichever camera/mic was remembered from last time.
-      startCallFlow();
+      // Opening the page is meant to be the only step on repeat visits — but
+      // on the very first visit from a given browser, skip the auto-start so
+      // there's a calm window (with Safari's normal toolbar still visible)
+      // to set up "Add to Home Screen" before the page takes over the screen.
+      if (localStorage.getItem(LS_HAS_CONNECTED)) {
+        startCallFlow();
+      } else {
+        setPlaceholder('Ready when you are', 'First time here: feel free to set up "Add to Home Screen" now, then tap Start Call. After this, it\'ll connect automatically every time.', true);
+      }
     } catch (err) {
       setPlaceholder('Camera or microphone blocked', 'Allow camera and microphone access for this page in your browser settings, then reload.', true);
       setStatus('Permission needed', 'bad');
@@ -287,6 +304,7 @@
 
       if (msg.type === 'joined') {
         if (msg.peers === 2) {
+          amCaller = true;
           await createPeerConnection();
           await makeOffer();
         }
@@ -360,13 +378,44 @@
       if (!pc) return;
       if (pc.connectionState === 'connected') {
         setStatus('Connected', 'live');
-      } else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
-        setStatus('Connection lost', 'bad');
-        setPlaceholder('Connection lost', 'Trying to reconnect, or tap Start Call again.', true);
+        setPlaceholder(null, null, false);
+        clearTimeout(disconnectTimer);
+        iceRestartAttempts = 0; // reset once the connection is stably back
+        localStorage.setItem(LS_HAS_CONNECTED, 'true');
+      } else if (pc.connectionState === 'disconnected') {
+        // 'disconnected' often self-heals within a few seconds (a brief
+        // Wi-Fi blip, a tab losing focus momentarily, etc.) — give it a
+        // short grace period before trying anything ourselves.
+        setStatus('Connection wobbling — recovering…', 'warn');
+        clearTimeout(disconnectTimer);
+        disconnectTimer = setTimeout(attemptIceRestart, 4000);
+      } else if (pc.connectionState === 'failed') {
+        setStatus('Connection lost — reconnecting…', 'bad');
+        clearTimeout(disconnectTimer);
+        attemptIceRestart();
       } else if (pc.connectionState === 'connecting') {
         setStatus('Connecting…', 'warn');
       }
     };
+  }
+
+  async function attemptIceRestart() {
+    if (!pc || !amCaller) return; // only the caller renegotiates, to avoid both sides colliding
+    if (pc.connectionState === 'connected') return; // already recovered on its own
+    if (iceRestartAttempts >= MAX_ICE_RESTARTS) {
+      setStatus('Connection lost', 'bad');
+      setPlaceholder('Connection lost', 'Tap End Call, then Start Call again to reconnect.', true);
+      return;
+    }
+    iceRestartAttempts++;
+    try {
+      const offer = await pc.createOffer({ iceRestart: true });
+      await pc.setLocalDescription(offer);
+      send({ type: 'offer', sdp: offer.sdp });
+    } catch (e) {
+      // If this attempt fails to even start, the next state-change event
+      // (or the timer above) will trigger another try, up to the cap.
+    }
   }
 
   async function makeOffer() {
@@ -379,6 +428,9 @@
     if (pc) { pc.close(); pc = null; }
     remoteVideo.srcObject = null;
     pendingCandidates = [];
+    clearTimeout(disconnectTimer);
+    amCaller = false;
+    iceRestartAttempts = 0;
   }
 
   async function startCallFlow() {
@@ -444,26 +496,27 @@
   });
 
   fullscreenBtn.addEventListener('click', () => {
-    const supportsPageFullscreen = document.fullscreenEnabled &&
-      typeof document.documentElement.requestFullscreen === 'function';
-
-    if (!supportsPageFullscreen) {
-      // iPhone/iPad Safari (and any iOS browser, which all use the same
-      // engine) only allows the Fullscreen API on <video> elements, not
-      // the whole page — this is an Apple platform restriction, not
-      // something fixable from here. The real fix on iOS is adding this
-      // page to the Home Screen, which makes Safari hide its own address
-      // bar and controls automatically.
-      alert('Fullscreen isn\'t available for whole pages in this browser (an iPhone/iPad limitation).\n\nFor a true fullscreen view here: tap the Share icon, then "Add to Home Screen". Opening the call from that Home Screen icon instead of the browser gives you fullscreen automatically, every time.');
-      return;
-    }
-
     if (!document.fullscreenElement) {
       document.documentElement.requestFullscreen().catch(() => {});
     } else {
       document.exitFullscreen();
     }
   });
+
+  // iOS (iPhone/iPad) doesn't reliably support page-level fullscreen — on
+  // some iOS versions the API reports itself as "available" but actually
+  // calling it on a page like this one freezes the video. Rather than trust
+  // that self-reported support, detect iOS directly and hide the button
+  // there unconditionally. The real fullscreen equivalent on iOS is opening
+  // this page from a Home Screen icon (Share → Add to Home Screen), which
+  // hides Safari's own chrome automatically and works reliably.
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1); // iPadOS often reports as Mac
+  const supportsPageFullscreen = !isIOS && document.fullscreenEnabled &&
+    typeof document.documentElement.requestFullscreen === 'function';
+  if (!supportsPageFullscreen) {
+    fullscreenBtn.style.display = 'none';
+  }
 
   muteBtn.addEventListener('click', () => {
     if (!localStream) return;

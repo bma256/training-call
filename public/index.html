@@ -200,10 +200,37 @@
   const room = params.get('room') || 'gym-session';
 
   // Google's public STUN servers — free, no signup, fine for most home networks.
-  // If a connection ever fails to establish, that's the signal we'd need to add a TURN server.
+  // ICE tries these (and any direct path) first; they're enough for wifi-to-wifi calls.
+  //
+  // TURN fallback (Metered.ca free tier, 20GB/month) — only used if a direct/STUN
+  // path can't be found (e.g. restrictive cellular networks). Credentials below are
+  // tied to our free account quota, not a security secret — TURN creds are meant to
+  // ship to the client, that's how the protocol works. If the call connects fine
+  // without it (most sessions will), these entries simply go unused.
   const ICE_SERVERS = [
     { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' }
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun.relay.metered.ca:80' },
+    {
+      urls: 'turn:standard.relay.metered.ca:80',
+      username: '3781fe1f6d857864a846de77',
+      credential: 'epirZplvHuT7vJb1'
+    },
+    {
+      urls: 'turn:standard.relay.metered.ca:80?transport=tcp',
+      username: '3781fe1f6d857864a846de77',
+      credential: 'epirZplvHuT7vJb1'
+    },
+    {
+      urls: 'turn:standard.relay.metered.ca:443',
+      username: '3781fe1f6d857864a846de77',
+      credential: 'epirZplvHuT7vJb1'
+    },
+    {
+      urls: 'turns:standard.relay.metered.ca:443?transport=tcp',
+      username: '3781fe1f6d857864a846de77',
+      credential: 'epirZplvHuT7vJb1'
+    }
   ];
 
   let localStream = null;

@@ -306,7 +306,9 @@
     const videoId = cameraSelect.value || undefined;
     const audioId = micSelect.value || undefined;
     const constraints = {
-      video: videoId ? { deviceId: { exact: videoId } } : true,
+      video: videoId
+        ? { deviceId: { exact: videoId }, width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } }
+        : { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } },
       audio: audioId ? { deviceId: { exact: audioId } } : true
     };
 

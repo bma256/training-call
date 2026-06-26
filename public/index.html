@@ -146,6 +146,16 @@
     select { max-width: 130px; font-size: 12px; }
     button { padding: 9px 12px; font-size: 13px; }
   }
+
+  /* ===== DIAGNOSTICS MODULE: CSS START =====
+     Everything between these markers can be deleted as a block to fully
+     remove the low-bandwidth toggle's styling. It does not affect any
+     other rule above it. */
+  .subtle-row { opacity: 0.65; }
+  .subtle-row button {
+    padding: 6px 12px; font-size: 12px; border-radius: 8px;
+  }
+  /* ===== DIAGNOSTICS MODULE: CSS END ===== */
 </style>
 </head>
 <body>
@@ -175,6 +185,13 @@
     <button id="fullscreenBtn">Fullscreen</button>
     <button id="callBtn" class="primary">Start Call</button>
   </div>
+  <!-- ===== DIAGNOSTICS MODULE: bandwidth toggle button START =====
+       Delete this whole <div> to remove the low-bandwidth control from
+       the page. No other markup depends on it. -->
+  <div class="controls-row subtle-row">
+    <button id="bandwidthBtn" title="Lower outgoing video quality to save bandwidth">Low Bandwidth: Off</button>
+  </div>
+  <!-- ===== DIAGNOSTICS MODULE: bandwidth toggle button END ===== -->
 </footer>
 
 <script>
@@ -703,6 +720,209 @@
     localStorage.setItem(LS_MIC, micSelect.value);
     if (localStream) startLocalStream();
   });
+
+  // ===== DIAGNOSTICS MODULE START =====================================
+  // Adds: (1) a live connection-stats feed + per-session history log,
+  // written to localStorage only — never shown on this page; (2) an
+  // automatic bitrate cap that backs off when the call is routed through
+  // the TURN relay; (3) a manual "Low Bandwidth" toggle.
+  //
+  // Design goals: never touch the call's own variables or functions
+  // (pc, localStream, startLocalStream, createPeerConnection, etc.) —
+  // this block only *observes* them — so a bug here can't break calling,
+  // and the whole module can be deleted by removing this block plus the
+  // matching CSS/HTML blocks marked above, plus deleting public/diagnostics.html.
+  // Reports are viewed separately, on /diagnostics.html — nothing here
+  // changes what either side sees on the call screen itself.
+  const DIAG_LS_LIVE = 'trainingCall:diag:liveStats';
+  const DIAG_LS_LOG = 'trainingCall:diag:sessionLog';
+  const DIAG_LS_LOWBW = 'trainingCall:diag:lowBandwidth';
+  const DIAG_MAX_LOG_ENTRIES = 50;
+  const DIAG_POLL_MS = 3000;
+  const DIAG_BITRATE_FULL = 2500000;  // ~2.5 Mbps cap, matches the 1080p target
+  const DIAG_BITRATE_RELAY = 900000;  // auto cap when routed via TURN relay
+  const DIAG_BITRATE_LOW = 350000;    // manual "Low Bandwidth" cap
+
+  const bandwidthBtn = document.getElementById('bandwidthBtn');
+
+  let lowBandwidthMode = localStorage.getItem(DIAG_LS_LOWBW) === '1';
+  let diagLastPc = null;
+  let diagPollTimer = null;
+  let diagSessionStart = null;
+  let diagBitrateSamples = [];
+  let diagReconnectCount = 0;
+  let diagCandidateType = null;
+  let diagPrevBytes = { sent: 0, received: 0, time: 0 };
+
+  function diagSetButtonLabel() {
+    if (!bandwidthBtn) return;
+    bandwidthBtn.textContent = 'Low Bandwidth: ' + (lowBandwidthMode ? 'On' : 'Off');
+    bandwidthBtn.classList.toggle('active-off', lowBandwidthMode);
+  }
+  diagSetButtonLabel();
+
+  async function diagApplyBitrateCap(kbpsCap) {
+    if (!pc) return;
+    try {
+      const sender = pc.getSenders().find((s) => s.track && s.track.kind === 'video');
+      if (!sender) return;
+      const params = sender.getParameters();
+      if (!params.encodings || !params.encodings.length) params.encodings = [{}];
+      params.encodings[0].maxBitrate = kbpsCap;
+      await sender.setParameters(params);
+    } catch (e) { /* never let a diagnostics failure affect the call */ }
+  }
+
+  async function diagApplyBandwidthMode() {
+    if (lowBandwidthMode) {
+      await diagApplyBitrateCap(DIAG_BITRATE_LOW);
+      const track = localStream && localStream.getVideoTracks()[0];
+      if (track) {
+        try {
+          await track.applyConstraints({ width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 20 } });
+        } catch (e) {}
+      }
+    } else {
+      // Hand back to the automatic cap (full quality, or relay-reduced —
+      // diagPollStats will reassert the right one on its next tick).
+      await diagApplyBitrateCap(DIAG_BITRATE_FULL);
+      const track = localStream && localStream.getVideoTracks()[0];
+      if (track) {
+        try {
+          await track.applyConstraints({ width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } });
+        } catch (e) {}
+      }
+    }
+  }
+
+  if (bandwidthBtn) {
+    bandwidthBtn.addEventListener('click', () => {
+      lowBandwidthMode = !lowBandwidthMode;
+      localStorage.setItem(DIAG_LS_LOWBW, lowBandwidthMode ? '1' : '0');
+      diagSetButtonLabel();
+      diagApplyBandwidthMode();
+    });
+  }
+
+  function diagFinalizeSession() {
+    if (!diagSessionStart || diagBitrateSamples.length === 0) {
+      diagSessionStart = null;
+      diagBitrateSamples = [];
+      diagReconnectCount = 0;
+      diagCandidateType = null;
+      localStorage.removeItem(DIAG_LS_LIVE);
+      return;
+    }
+    const endedAt = Date.now();
+    const avgUp = Math.round(diagBitrateSamples.reduce((a, s) => a + s.up, 0) / diagBitrateSamples.length);
+    const avgDown = Math.round(diagBitrateSamples.reduce((a, s) => a + s.down, 0) / diagBitrateSamples.length);
+    const entry = {
+      startedAt: diagSessionStart,
+      endedAt,
+      durationSec: Math.round((endedAt - diagSessionStart) / 1000),
+      avgBitrateUpKbps: avgUp,
+      avgBitrateDownKbps: avgDown,
+      reconnectCount: diagReconnectCount,
+      candidateType: diagCandidateType,
+      bandwidthMode: lowBandwidthMode ? 'low' : 'auto'
+    };
+    try {
+      const log = JSON.parse(localStorage.getItem(DIAG_LS_LOG) || '[]');
+      log.push(entry);
+      while (log.length > DIAG_MAX_LOG_ENTRIES) log.shift();
+      localStorage.setItem(DIAG_LS_LOG, JSON.stringify(log));
+    } catch (e) {}
+    diagSessionStart = null;
+    diagBitrateSamples = [];
+    diagReconnectCount = 0;
+    diagCandidateType = null;
+    localStorage.removeItem(DIAG_LS_LIVE);
+  }
+
+  async function diagPollStats(pcRef) {
+    if (!pcRef) return;
+    try {
+      const stats = await pcRef.getStats();
+      let bytesSent = null, bytesReceived = null, pairLocalCandId = null;
+      stats.forEach((report) => {
+        if (report.type === 'outbound-rtp' && report.kind === 'video') bytesSent = report.bytesSent;
+        if (report.type === 'inbound-rtp' && report.kind === 'video') bytesReceived = report.bytesReceived;
+        if (report.type === 'candidate-pair' && report.state === 'succeeded' && (report.nominated || report.selected)) {
+          pairLocalCandId = report.localCandidateId;
+        }
+      });
+      let candidateType = diagCandidateType;
+      if (pairLocalCandId) {
+        const localCand = stats.get(pairLocalCandId);
+        if (localCand && localCand.candidateType) candidateType = localCand.candidateType; // host/srflx/relay/prflx
+      }
+
+      const now = performance.now();
+      let kbpsUp = null, kbpsDown = null;
+      const dt = diagPrevBytes.time ? (now - diagPrevBytes.time) / 1000 : 0;
+      if (dt > 0 && bytesSent != null) kbpsUp = Math.max(0, Math.round(((bytesSent - diagPrevBytes.sent) * 8) / dt / 1000));
+      if (dt > 0 && bytesReceived != null) kbpsDown = Math.max(0, Math.round(((bytesReceived - diagPrevBytes.received) * 8) / dt / 1000));
+      diagPrevBytes = { sent: bytesSent || 0, received: bytesReceived || 0, time: now };
+
+      if (kbpsUp != null && kbpsDown != null) {
+        diagBitrateSamples.push({ up: kbpsUp, down: kbpsDown });
+        if (diagBitrateSamples.length > 400) diagBitrateSamples.shift();
+      }
+
+      if (candidateType && candidateType !== diagCandidateType) {
+        diagCandidateType = candidateType;
+        if (!lowBandwidthMode) {
+          diagApplyBitrateCap(candidateType === 'relay' ? DIAG_BITRATE_RELAY : DIAG_BITRATE_FULL);
+        }
+      }
+
+      const vSender = pcRef.getSenders().find((s) => s.track && s.track.kind === 'video');
+      const vReceiver = pcRef.getReceivers().find((r) => r.track && r.track.kind === 'video');
+      const sentSettings = (vSender && vSender.track) ? vSender.track.getSettings() : {};
+      const recvSettings = (vReceiver && vReceiver.track) ? vReceiver.track.getSettings() : {};
+
+      localStorage.setItem(DIAG_LS_LIVE, JSON.stringify({
+        timestamp: Date.now(),
+        connectionState: pcRef.connectionState,
+        candidateType: diagCandidateType,
+        bitrateUpKbps: kbpsUp,
+        bitrateDownKbps: kbpsDown,
+        resolutionSent: sentSettings.width ? (sentSettings.width + 'x' + sentSettings.height) : null,
+        resolutionReceived: recvSettings.width ? (recvSettings.width + 'x' + recvSettings.height) : null,
+        reconnectCount: diagReconnectCount,
+        bandwidthMode: lowBandwidthMode ? 'low' : 'auto'
+      }));
+    } catch (e) { /* never let a diagnostics failure affect the call */ }
+  }
+
+  function diagAttachToPc(pcRef) {
+    if (!diagSessionStart) diagSessionStart = Date.now();
+    diagPrevBytes = { sent: 0, received: 0, time: performance.now() };
+    if (lowBandwidthMode) diagApplyBandwidthMode();
+    pcRef.addEventListener('connectionstatechange', () => {
+      if (pcRef.connectionState === 'disconnected' || pcRef.connectionState === 'failed') {
+        diagReconnectCount++;
+      }
+      if (pcRef.connectionState === 'connected' && !diagPollTimer) {
+        diagPollTimer = setInterval(() => diagPollStats(pcRef), DIAG_POLL_MS);
+      }
+    });
+  }
+
+  // Rather than touch createPeerConnection()/teardownPeerConnection(), this
+  // just watches the existing `pc` variable from the outside and reacts
+  // when it appears or disappears.
+  setInterval(() => {
+    if (pc && pc !== diagLastPc) {
+      diagLastPc = pc;
+      diagAttachToPc(pc);
+    } else if (!pc && diagLastPc) {
+      diagLastPc = null;
+      if (diagPollTimer) { clearInterval(diagPollTimer); diagPollTimer = null; }
+      diagFinalizeSession();
+    }
+  }, 1000);
+  // ===== DIAGNOSTICS MODULE END =======================================
 
   init();
 })();

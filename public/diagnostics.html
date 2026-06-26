@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Training Call — Diagnostics</title>
+<!--
+  This page is completely separate from index.html (the call screen).
+  It only reads data that index.html quietly writes to localStorage in
+  the background — it does not affect the call in any way, and nothing
+  on the call screen links here, so the trainer never sees it unless
+  someone deliberately opens this URL.
+
+  To remove this feature entirely: delete this file, plus the block
+  marked "DIAGNOSTICS MODULE" in public/index.html.
+-->
+<style>
+  :root {
+    --bg: #0b0d10; --panel: #14171c; --line: #232830;
+    --text: #e8eaed; --muted: #8b93a1; --accent: #4fd1c5; --danger: #e0556f; --warn: #e3b341;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 16px; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    max-width: 720px; margin: 0 auto;
+  }
+  h1 { font-size: 17px; margin: 4px 0 2px; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 18px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 14px 16px; margin-bottom: 16px;
+  }
+  .card h2 { font-size: 14px; margin: 0 0 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+  .row { display: flex; justify-content: space-between; padding: 5px 0; font-size: 14px; border-bottom: 1px solid var(--line); }
+  .row:last-child { border-bottom: none; }
+  .row .v { color: var(--text); font-weight: 500; }
+  .row .v.muted { color: var(--muted); font-weight: 400; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th, td { text-align: left; padding: 6px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 500; }
+  .empty { color: var(--muted); font-size: 13px; padding: 6px 0; }
+  .btnrow { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+  button {
+    border: 1px solid var(--line); background: var(--bg); color: var(--text);
+    border-radius: 8px; padding: 9px 14px; font-size: 13px; cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); }
+  button.danger:hover { border-color: var(--danger); color: var(--danger); }
+  .toast {
+    position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%);
+    background: var(--accent); color: #06201d; padding: 8px 16px; border-radius: 8px;
+    font-size: 13px; font-weight: 500; opacity: 0; transition: opacity 0.25s ease; pointer-events: none;
+  }
+  .toast.show { opacity: 1; }
+  .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; }
+  .dot.live { background: var(--accent); }
+  .dot.idle { background: var(--muted); }
+</style>
+</head>
+<body>
+
+<h1>Training Call — Diagnostics</h1>
+<div class="sub">Connection stats for <em>this device's browser only</em> — Maria's device keeps its own, separately.</div>
+
+<div class="card">
+  <h2 id="liveHeader"><span class="dot idle"></span>Live</h2>
+  <div id="liveBody">
+    <div class="empty">No call in progress on this device right now.</div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Session History (most recent first)</h2>
+  <div id="historyBody"><div class="empty">No completed sessions logged yet.</div></div>
+</div>
+
+<div class="btnrow">
+  <button id="copyBtn">Copy report</button>
+  <button id="downloadBtn">Download report (.txt)</button>
+  <button id="clearBtn" class="danger">Clear history</button>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+(() => {
+  const LS_LIVE = 'trainingCall:diag:liveStats';
+  const LS_LOG = 'trainingCall:diag:sessionLog';
+
+  const liveHeader = document.getElementById('liveHeader');
+  const liveBody = document.getElementById('liveBody');
+  const historyBody = document.getElementById('historyBody');
+  const toast = document.getElementById('toast');
+
+  function fmtTime(ts) {
+    if (!ts) return '—';
+    const d = new Date(ts);
+    return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  }
+  function fmtDur(sec) {
+    if (sec == null) return '—';
+    const m = Math.floor(sec / 60), s = sec % 60;
+    return m + 'm ' + s + 's';
+  }
+  function fmtKbps(v) { return v == null ? '—' : v + ' kbps'; }
+
+  function readLive() {
+    try {
+      const raw = localStorage.getItem(LS_LIVE);
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) { return null; }
+  }
+  function readLog() {
+    try {
+      const raw = localStorage.getItem(LS_LOG);
+      return raw ? JSON.parse(raw) : [];
+    } catch (e) { return []; }
+  }
+
+  function renderLive() {
+    const live = readLive();
+    const isFresh = live && (Date.now() - live.timestamp < 8000); // stale if no update in 8s
+    liveHeader.innerHTML = '<span class="dot ' + (isFresh ? 'live' : 'idle') + '"></span>Live';
+    if (!isFresh) {
+      liveBody.innerHTML = '<div class="empty">No call in progress on this device right now.</div>';
+      return;
+    }
+    const rows = [
+      ['Connection state', live.connectionState || '—'],
+      ['Route', live.candidateType === 'relay' ? 'TURN relay' : (live.candidateType ? 'Direct (' + live.candidateType + ')' : '—')],
+      ['Outgoing bitrate', fmtKbps(live.bitrateUpKbps)],
+      ['Incoming bitrate', fmtKbps(live.bitrateDownKbps)],
+      ['Resolution sent', live.resolutionSent || '—'],
+      ['Resolution received', live.resolutionReceived || '—'],
+      ['Reconnects this session', live.reconnectCount],
+      ['Bandwidth mode', live.bandwidthMode === 'low' ? 'Low (manual)' : 'Auto']
+    ];
+    liveBody.innerHTML = rows.map(([k, v]) =>
+      '<div class="row"><span>' + k + '</span><span class="v">' + v + '</span></div>'
+    ).join('');
+  }
+
+  function renderHistory() {
+    const log = readLog().slice().reverse();
+    if (!log.length) {
+      historyBody.innerHTML = '<div class="empty">No completed sessions logged yet.</div>';
+      return;
+    }
+    let html = '<table><tr><th>Start</th><th>Dur</th><th>Up</th><th>Down</th><th>Reconn.</th><th>Route</th><th>Mode</th></tr>';
+    log.forEach((e) => {
+      html += '<tr>' +
+        '<td>' + fmtTime(e.startedAt) + '</td>' +
+        '<td>' + fmtDur(e.durationSec) + '</td>' +
+        '<td>' + fmtKbps(e.avgBitrateUpKbps) + '</td>' +
+        '<td>' + fmtKbps(e.avgBitrateDownKbps) + '</td>' +
+        '<td>' + e.reconnectCount + '</td>' +
+        '<td>' + (e.candidateType || '—') + '</td>' +
+        '<td>' + (e.bandwidthMode === 'low' ? 'low' : 'auto') + '</td>' +
+        '</tr>';
+    });
+    html += '</table>';
+    historyBody.innerHTML = html;
+  }
+
+  function buildReportText() {
+    const live = readLive();
+    const log = readLog().slice().reverse();
+    let lines = [];
+    lines.push('Training Call — Diagnostics Report');
+    lines.push('Generated: ' + new Date().toLocaleString());
+    lines.push('');
+    lines.push('-- Live (this device) --');
+    if (live && (Date.now() - live.timestamp < 8000)) {
+      lines.push('Connection state: ' + (live.connectionState || '—'));
+      lines.push('Route: ' + (live.candidateType || '—'));
+      lines.push('Outgoing bitrate: ' + fmtKbps(live.bitrateUpKbps));
+      lines.push('Incoming bitrate: ' + fmtKbps(live.bitrateDownKbps));
+      lines.push('Resolution sent: ' + (live.resolutionSent || '—'));
+      lines.push('Resolution received: ' + (live.resolutionReceived || '—'));
+      lines.push('Reconnects this session: ' + live.reconnectCount);
+      lines.push('Bandwidth mode: ' + (live.bandwidthMode === 'low' ? 'low (manual)' : 'auto'));
+    } else {
+      lines.push('No call in progress on this device.');
+    }
+    lines.push('');
+    lines.push('-- Session history (oldest to newest) --');
+    if (!log.length) {
+      lines.push('None logged yet.');
+    } else {
+      log.slice().reverse().forEach((e, i) => {
+        lines.push(
+          (i + 1) + '. ' + fmtTime(e.startedAt) + ' | dur ' + fmtDur(e.durationSec) +
+          ' | up ' + fmtKbps(e.avgBitrateUpKbps) + ' | down ' + fmtKbps(e.avgBitrateDownKbps) +
+          ' | reconnects ' + e.reconnectCount + ' | route ' + (e.candidateType || '—') +
+          ' | mode ' + (e.bandwidthMode === 'low' ? 'low' : 'auto')
+        );
+      });
+    }
+    return lines.join('\n');
+  }
+
+  function showToast(msg) {
+    toast.textContent = msg;
+    toast.classList.add('show');
+    setTimeout(() => toast.classList.remove('show'), 1800);
+  }
+
+  document.getElementById('copyBtn').addEventListener('click', async () => {
+    const text = buildReportText();
+    try {
+      await navigator.clipboard.writeText(text);
+      showToast('Report copied — paste it into a Claude chat');
+    } catch (e) {
+      showToast('Copy failed — try Download instead');
+    }
+  });
+
+  document.getElementById('downloadBtn').addEventListener('click', () => {
+    const text = buildReportText();
+    const blob = new Blob([text], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
+    a.href = url;
+    a.download = 'training-call-report-' + stamp + '.txt';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    showToast('Report downloaded');
+  });
+
+  document.getElementById('clearBtn').addEventListener('click', () => {
+    if (!confirm('Clear all logged session history on this device? This cannot be undone.')) return;
+    localStorage.removeItem(LS_LOG);
+    renderHistory();
+    showToast('History cleared');
+  });
+
+  renderLive();
+  renderHistory();
+  setInterval(renderLive, 2000);
+  setInterval(renderHistory, 5000);
+})();
+</script>
+</body>
+</html>

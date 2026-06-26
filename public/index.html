@@ -752,7 +752,7 @@
   let diagBitrateSamples = [];
   let diagReconnectCount = 0;
   let diagCandidateType = null;
-  let diagPrevBytes = { sent: 0, received: 0, time: 0 };
+  let diagPrevBytes = { sent: 0, received: 0, audioSent: 0, audioReceived: 0, time: 0 };
 
   function diagSetButtonLabel() {
     if (!bandwidthBtn) return;
@@ -816,12 +816,22 @@
     const endedAt = Date.now();
     const avgUp = Math.round(diagBitrateSamples.reduce((a, s) => a + s.up, 0) / diagBitrateSamples.length);
     const avgDown = Math.round(diagBitrateSamples.reduce((a, s) => a + s.down, 0) / diagBitrateSamples.length);
+    const audioUpSamples = diagBitrateSamples.filter((s) => s.audioUp != null);
+    const audioDownSamples = diagBitrateSamples.filter((s) => s.audioDown != null);
+    const avgAudioUp = audioUpSamples.length ? Math.round(audioUpSamples.reduce((a, s) => a + s.audioUp, 0) / audioUpSamples.length) : null;
+    const avgAudioDown = audioDownSamples.length ? Math.round(audioDownSamples.reduce((a, s) => a + s.audioDown, 0) / audioDownSamples.length) : null;
+    // Loss is a cumulative running total, so the last sample already reflects the whole session.
+    const lossSamples = diagBitrateSamples.filter((s) => s.audioLossPct != null);
+    const finalAudioLossPct = lossSamples.length ? lossSamples[lossSamples.length - 1].audioLossPct : null;
     const entry = {
       startedAt: diagSessionStart,
       endedAt,
       durationSec: Math.round((endedAt - diagSessionStart) / 1000),
       avgBitrateUpKbps: avgUp,
       avgBitrateDownKbps: avgDown,
+      avgAudioBitrateUpKbps: avgAudioUp,
+      avgAudioBitrateDownKbps: avgAudioDown,
+      audioPacketLossPct: finalAudioLossPct,
       reconnectCount: diagReconnectCount,
       candidateType: diagCandidateType,
       bandwidthMode: lowBandwidthMode ? 'low' : 'auto'
@@ -844,9 +854,16 @@
     try {
       const stats = await pcRef.getStats();
       let bytesSent = null, bytesReceived = null, pairLocalCandId = null;
+      let audioBytesSent = null, audioBytesReceived = null, audioPacketsLost = null, audioPacketsReceived = null;
       stats.forEach((report) => {
         if (report.type === 'outbound-rtp' && report.kind === 'video') bytesSent = report.bytesSent;
         if (report.type === 'inbound-rtp' && report.kind === 'video') bytesReceived = report.bytesReceived;
+        if (report.type === 'outbound-rtp' && report.kind === 'audio') audioBytesSent = report.bytesSent;
+        if (report.type === 'inbound-rtp' && report.kind === 'audio') {
+          audioBytesReceived = report.bytesReceived;
+          audioPacketsLost = report.packetsLost;
+          audioPacketsReceived = report.packetsReceived;
+        }
         if (report.type === 'candidate-pair' && report.state === 'succeeded' && (report.nominated || report.selected)) {
           pairLocalCandId = report.localCandidateId;
         }
@@ -858,14 +875,23 @@
       }
 
       const now = performance.now();
-      let kbpsUp = null, kbpsDown = null;
+      let kbpsUp = null, kbpsDown = null, audioKbpsUp = null, audioKbpsDown = null;
       const dt = diagPrevBytes.time ? (now - diagPrevBytes.time) / 1000 : 0;
       if (dt > 0 && bytesSent != null) kbpsUp = Math.max(0, Math.round(((bytesSent - diagPrevBytes.sent) * 8) / dt / 1000));
       if (dt > 0 && bytesReceived != null) kbpsDown = Math.max(0, Math.round(((bytesReceived - diagPrevBytes.received) * 8) / dt / 1000));
-      diagPrevBytes = { sent: bytesSent || 0, received: bytesReceived || 0, time: now };
+      if (dt > 0 && audioBytesSent != null) audioKbpsUp = Math.max(0, Math.round(((audioBytesSent - diagPrevBytes.audioSent) * 8) / dt / 1000));
+      if (dt > 0 && audioBytesReceived != null) audioKbpsDown = Math.max(0, Math.round(((audioBytesReceived - diagPrevBytes.audioReceived) * 8) / dt / 1000));
+      const audioLossPct = (audioPacketsLost != null && audioPacketsReceived != null && (audioPacketsLost + audioPacketsReceived) > 0)
+        ? Math.round((audioPacketsLost / (audioPacketsLost + audioPacketsReceived)) * 1000) / 10
+        : null;
+      diagPrevBytes = {
+        sent: bytesSent || 0, received: bytesReceived || 0,
+        audioSent: audioBytesSent || 0, audioReceived: audioBytesReceived || 0,
+        time: now
+      };
 
       if (kbpsUp != null && kbpsDown != null) {
-        diagBitrateSamples.push({ up: kbpsUp, down: kbpsDown });
+        diagBitrateSamples.push({ up: kbpsUp, down: kbpsDown, audioUp: audioKbpsUp, audioDown: audioKbpsDown, audioLossPct });
         if (diagBitrateSamples.length > 400) diagBitrateSamples.shift();
       }
 
@@ -887,6 +913,9 @@
         candidateType: diagCandidateType,
         bitrateUpKbps: kbpsUp,
         bitrateDownKbps: kbpsDown,
+        audioBitrateUpKbps: audioKbpsUp,
+        audioBitrateDownKbps: audioKbpsDown,
+        audioPacketLossPct: audioLossPct,
         resolutionSent: sentSettings.width ? (sentSettings.width + 'x' + sentSettings.height) : null,
         resolutionReceived: recvSettings.width ? (recvSettings.width + 'x' + recvSettings.height) : null,
         reconnectCount: diagReconnectCount,

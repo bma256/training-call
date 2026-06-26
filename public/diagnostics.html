@@ -131,6 +131,9 @@
       ['Route', live.candidateType === 'relay' ? 'TURN relay' : (live.candidateType ? 'Direct (' + live.candidateType + ')' : '—')],
       ['Outgoing bitrate', fmtKbps(live.bitrateUpKbps)],
       ['Incoming bitrate', fmtKbps(live.bitrateDownKbps)],
+      ['Audio out bitrate', fmtKbps(live.audioBitrateUpKbps)],
+      ['Audio in bitrate', fmtKbps(live.audioBitrateDownKbps)],
+      ['Audio packet loss', live.audioPacketLossPct != null ? live.audioPacketLossPct + '%' : '—'],
       ['Resolution sent', live.resolutionSent || '—'],
       ['Resolution received', live.resolutionReceived || '—'],
       ['Reconnects this session', live.reconnectCount],
@@ -147,13 +150,14 @@
       historyBody.innerHTML = '<div class="empty">No completed sessions logged yet.</div>';
       return;
     }
-    let html = '<table><tr><th>Start</th><th>Dur</th><th>Up</th><th>Down</th><th>Reconn.</th><th>Route</th><th>Mode</th></tr>';
+    let html = '<table><tr><th>Start</th><th>Dur</th><th>Up</th><th>Down</th><th>A.Loss</th><th>Reconn.</th><th>Route</th><th>Mode</th></tr>';
     log.forEach((e) => {
       html += '<tr>' +
         '<td>' + fmtTime(e.startedAt) + '</td>' +
         '<td>' + fmtDur(e.durationSec) + '</td>' +
         '<td>' + fmtKbps(e.avgBitrateUpKbps) + '</td>' +
         '<td>' + fmtKbps(e.avgBitrateDownKbps) + '</td>' +
+        '<td>' + (e.audioPacketLossPct != null ? e.audioPacketLossPct + '%' : '—') + '</td>' +
         '<td>' + e.reconnectCount + '</td>' +
         '<td>' + (e.candidateType || '—') + '</td>' +
         '<td>' + (e.bandwidthMode === 'low' ? 'low' : 'auto') + '</td>' +
@@ -176,6 +180,9 @@
       lines.push('Route: ' + (live.candidateType || '—'));
       lines.push('Outgoing bitrate: ' + fmtKbps(live.bitrateUpKbps));
       lines.push('Incoming bitrate: ' + fmtKbps(live.bitrateDownKbps));
+      lines.push('Audio out bitrate: ' + fmtKbps(live.audioBitrateUpKbps));
+      lines.push('Audio in bitrate: ' + fmtKbps(live.audioBitrateDownKbps));
+      lines.push('Audio packet loss: ' + (live.audioPacketLossPct != null ? live.audioPacketLossPct + '%' : '—'));
       lines.push('Resolution sent: ' + (live.resolutionSent || '—'));
       lines.push('Resolution received: ' + (live.resolutionReceived || '—'));
       lines.push('Reconnects this session: ' + live.reconnectCount);
@@ -192,6 +199,7 @@
         lines.push(
           (i + 1) + '. ' + fmtTime(e.startedAt) + ' | dur ' + fmtDur(e.durationSec) +
           ' | up ' + fmtKbps(e.avgBitrateUpKbps) + ' | down ' + fmtKbps(e.avgBitrateDownKbps) +
+          ' | audio loss ' + (e.audioPacketLossPct != null ? e.audioPacketLossPct + '%' : '—') +
           ' | reconnects ' + e.reconnectCount + ' | route ' + (e.candidateType || '—') +
           ' | mode ' + (e.bandwidthMode === 'low' ? 'low' : 'auto')
         );

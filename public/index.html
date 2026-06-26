@@ -899,14 +899,20 @@
     if (!diagSessionStart) diagSessionStart = Date.now();
     diagPrevBytes = { sent: 0, received: 0, time: performance.now() };
     if (lowBandwidthMode) diagApplyBandwidthMode();
-    pcRef.addEventListener('connectionstatechange', () => {
+    const diagHandleStateChange = () => {
       if (pcRef.connectionState === 'disconnected' || pcRef.connectionState === 'failed') {
         diagReconnectCount++;
       }
       if (pcRef.connectionState === 'connected' && !diagPollTimer) {
         diagPollTimer = setInterval(() => diagPollStats(pcRef), DIAG_POLL_MS);
       }
-    });
+    };
+    pcRef.addEventListener('connectionstatechange', diagHandleStateChange);
+    // Covers the case where the call already reached "connected" in the
+    // moment between pc being created and this watcher noticing it (the
+    // watcher only checks once per second) — without this, a fast-connecting
+    // call (e.g. two tabs on the same network) could skip logging entirely.
+    diagHandleStateChange();
   }
 
   // Rather than touch createPeerConnection()/teardownPeerConnection(), this

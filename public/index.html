@@ -161,6 +161,7 @@
      Styling for the "Name Camera" panel. Delete this block (and the
      matching HTML / JS blocks) to remove the feature entirely. */
   #cameraNamePanel { flex-wrap: wrap; }
+  #cameraNamePanel[hidden] { display: none; } /* without this, .controls-row's display:flex wins the tie and the panel never actually hides */
   .cam-name-label { font-size: 11px; color: var(--muted); width: 100%; text-align: center; }
   /* ===== CAMERA NAMING MODULE: CSS END ===== */
 </style>

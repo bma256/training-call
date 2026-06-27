@@ -156,6 +156,13 @@
     padding: 6px 12px; font-size: 12px; border-radius: 8px;
   }
   /* ===== DIAGNOSTICS MODULE: CSS END ===== */
+
+  /* ===== CAMERA NAMING MODULE: CSS START =====
+     Styling for the "Name Camera" panel. Delete this block (and the
+     matching HTML / JS blocks) to remove the feature entirely. */
+  #cameraNamePanel { flex-wrap: wrap; }
+  .cam-name-label { font-size: 11px; color: var(--muted); width: 100%; text-align: center; }
+  /* ===== CAMERA NAMING MODULE: CSS END ===== */
 </style>
 </head>
 <body>
@@ -192,6 +199,26 @@
     <button id="bandwidthBtn" title="Lower outgoing video quality to save bandwidth">Low Bandwidth: Off</button>
   </div>
   <!-- ===== DIAGNOSTICS MODULE: bandwidth toggle button END ===== -->
+
+  <!-- ===== CAMERA NAMING MODULE: controls START =====
+       Lets you assign a persistent custom name (e.g. "GymE-1") to whichever
+       camera is currently selected in the dropdown above — useful when two
+       cameras are the same model and the browser shows the same generic
+       label for both. Delete this whole block (both <div> rows) plus the
+       matching CSS and JS blocks to remove the feature; nothing else
+       depends on it. -->
+  <div class="controls-row subtle-row">
+    <button id="nameCameraBtn" title="Give the currently selected camera a custom name">Name Camera</button>
+  </div>
+  <div class="controls-row subtle-row" id="cameraNamePanel" hidden>
+    <span class="cam-name-label" id="cameraNamePanelLabel"></span>
+    <button class="cam-name-preset" data-name="GymE-1">GymE-1</button>
+    <button class="cam-name-preset" data-name="GymE-2">GymE-2</button>
+    <button id="cameraNameCustomBtn">Custom…</button>
+    <button id="cameraNameClearBtn">Clear name</button>
+    <button id="cameraNameCancelBtn">Cancel</button>
+  </div>
+  <!-- ===== CAMERA NAMING MODULE: controls END ===== -->
 </footer>
 
 <script>
@@ -306,6 +333,7 @@
         const opt = document.createElement('option');
         opt.value = d.deviceId;
         opt.textContent = d.label || `Camera ${camCount}`;
+        rawCameraLabels[d.deviceId] = opt.textContent; // CAMERA NAMING MODULE
         cameraSelect.appendChild(opt);
       } else if (d.kind === 'audioinput') {
         micCount++;
@@ -317,6 +345,7 @@
     });
     if (prevCam && [...cameraSelect.options].some((o) => o.value === prevCam)) cameraSelect.value = prevCam;
     if (prevMic && [...micSelect.options].some((o) => o.value === prevMic)) micSelect.value = prevMic;
+    relabelCameraOptions(); // CAMERA NAMING MODULE: apply any saved custom camera names
   }
 
   async function startLocalStream() {
@@ -720,6 +749,75 @@
     localStorage.setItem(LS_MIC, micSelect.value);
     if (localStream) startLocalStream();
   });
+
+  // ===== CAMERA NAMING MODULE: JS START =================================
+  // Assigns a persistent custom name (stored in localStorage, keyed by the
+  // browser's internal deviceId — stable across reloads as long as the
+  // camera stays in the same USB port) to whichever camera is selected.
+  // This solves the problem of two identical-model cameras (e.g. two
+  // EMEET PIXYs) reporting the exact same generic label, by letting you
+  // tell them apart yourself instead of relying on the OS-reported name.
+  //
+  // Design goal: only touches dropdown *display text* and a localStorage
+  // map — never touches which camera is actually selected/streamed, so it
+  // can't affect call behavior. To remove: delete this block, the two
+  // "CAMERA NAMING MODULE" lines inside listDevices() above, and the
+  // matching HTML/CSS blocks.
+  const LS_CAMERA_NAMES = 'trainingCall:cameraNames';
+  const nameCameraBtn = document.getElementById('nameCameraBtn');
+  const cameraNamePanel = document.getElementById('cameraNamePanel');
+  const cameraNamePanelLabel = document.getElementById('cameraNamePanelLabel');
+  const cameraNameCustomBtn = document.getElementById('cameraNameCustomBtn');
+  const cameraNameClearBtn = document.getElementById('cameraNameClearBtn');
+  const cameraNameCancelBtn = document.getElementById('cameraNameCancelBtn');
+  let rawCameraLabels = {}; // deviceId -> original OS-reported label, refreshed by listDevices()
+
+  function loadCameraNames() {
+    try { return JSON.parse(localStorage.getItem(LS_CAMERA_NAMES) || '{}'); }
+    catch { return {}; }
+  }
+  function saveCameraNames(map) {
+    localStorage.setItem(LS_CAMERA_NAMES, JSON.stringify(map));
+  }
+  function relabelCameraOptions() {
+    const names = loadCameraNames();
+    [...cameraSelect.options].forEach((opt) => {
+      const raw = rawCameraLabels[opt.value] || opt.textContent;
+      opt.textContent = names[opt.value] ? `${names[opt.value]} (${raw})` : raw;
+    });
+  }
+  function setCameraName(name) {
+    if (!cameraSelect.value) return;
+    const names = loadCameraNames();
+    if (name) names[cameraSelect.value] = name;
+    else delete names[cameraSelect.value];
+    saveCameraNames(names);
+    relabelCameraOptions();
+  }
+  nameCameraBtn.addEventListener('click', () => {
+    const raw = rawCameraLabels[cameraSelect.value] || 'this camera';
+    cameraNamePanelLabel.textContent = `Naming the camera currently selected above (${raw})`;
+    cameraNamePanel.hidden = !cameraNamePanel.hidden;
+  });
+  document.querySelectorAll('.cam-name-preset').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      setCameraName(btn.dataset.name);
+      cameraNamePanel.hidden = true;
+    });
+  });
+  cameraNameCustomBtn.addEventListener('click', () => {
+    const name = prompt('Custom name for this camera:', '');
+    if (name && name.trim()) setCameraName(name.trim().slice(0, 24));
+    cameraNamePanel.hidden = true;
+  });
+  cameraNameClearBtn.addEventListener('click', () => {
+    setCameraName(null);
+    cameraNamePanel.hidden = true;
+  });
+  cameraNameCancelBtn.addEventListener('click', () => {
+    cameraNamePanel.hidden = true;
+  });
+  // ===== CAMERA NAMING MODULE: JS END =====================================
 
   // ===== DIAGNOSTICS MODULE START =====================================
   // Adds: (1) a live connection-stats feed + per-session history log,

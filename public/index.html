@@ -926,9 +926,14 @@
 
   function sendCameraList() {
     if (!controlChannel || controlChannel.readyState !== 'open') return;
+    const names = loadCameraNames(); // CAMERA NAMING MODULE: custom names, keyed by deviceId
     const cameras = [...cameraSelect.options].map((opt) => ({
       deviceId: opt.value,
-      label: opt.textContent,
+      // Prefer the clean custom name (e.g. "GymE-1") over the full dropdown
+      // text, which includes the raw OS-reported label in parentheses —
+      // that extra detail is useful locally but just noise on the other
+      // side's screen.
+      label: names[opt.value] || rawCameraLabels[opt.value] || opt.textContent,
       active: opt.value === cameraSelect.value
     }));
     controlChannel.send(JSON.stringify({ type: 'camera-list', cameras }));

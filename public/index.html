@@ -164,6 +164,36 @@
   #cameraNamePanel[hidden] { display: none; } /* without this, .controls-row's display:flex wins the tie and the panel never actually hides */
   .cam-name-label { font-size: 11px; color: var(--muted); width: 100%; text-align: center; }
   /* ===== CAMERA NAMING MODULE: CSS END ===== */
+
+  /* ===== CAMERA REMOTE SWITCH MODULE: CSS START =====
+     A small floating bar over the top of the remote video, showing one
+     button per camera the OTHER side has available, so either person can
+     ask the other side to switch cameras without touching their own
+     dropdown. Delete this block (and the matching HTML/JS blocks) to
+     remove the feature entirely. */
+  #camSwitchOverlay {
+    position: absolute;
+    top: calc(10px + env(safe-area-inset-top));
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 5;
+    display: flex;
+    gap: 8px;
+    max-width: calc(100% - 24px);
+    overflow-x: auto;
+    background: rgba(20,23,28,0.78);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 6px;
+  }
+  #camSwitchOverlay[hidden] { display: none; }
+  #camSwitchOverlay button {
+    padding: 7px 12px; font-size: 12px; border-radius: 8px; white-space: nowrap; flex-shrink: 0;
+  }
+  #camSwitchOverlay button.cam-switch-active {
+    border-color: var(--accent); color: var(--accent);
+  }
+  /* ===== CAMERA REMOTE SWITCH MODULE: CSS END ===== */
 </style>
 </head>
 <body>
@@ -180,6 +210,12 @@
     <div class="small" id="placeholderSub">This starts automatically. Send this same link to the other side — whoever opens it second connects the call.</div>
   </div>
   <video id="local" autoplay playsinline muted></video>
+  <!-- ===== CAMERA REMOTE SWITCH MODULE: overlay START =====
+       Populated at runtime with one button per camera the other side
+       reports having. Hidden whenever the other side has fewer than 2
+       cameras (nothing useful to switch to). -->
+  <div id="camSwitchOverlay" hidden></div>
+  <!-- ===== CAMERA REMOTE SWITCH MODULE: overlay END ===== -->
 </main>
 
 <footer>
@@ -284,6 +320,7 @@
   let inCall = false;
   let pendingCandidates = [];
   let amCaller = false; // only the caller initiates ICE restarts, to avoid both sides colliding
+  let controlChannel = null; // CAMERA REMOTE SWITCH MODULE: data channel for cross-side camera control
   let disconnectTimer = null;
   let iceRestartAttempts = 0;
   const MAX_ICE_RESTARTS = 4;
@@ -347,6 +384,7 @@
     if (prevCam && [...cameraSelect.options].some((o) => o.value === prevCam)) cameraSelect.value = prevCam;
     if (prevMic && [...micSelect.options].some((o) => o.value === prevMic)) micSelect.value = prevMic;
     relabelCameraOptions(); // CAMERA NAMING MODULE: apply any saved custom camera names
+    sendCameraList(); // CAMERA REMOTE SWITCH MODULE: let the other side know our current camera options
   }
 
   async function startLocalStream() {
@@ -479,6 +517,22 @@
 
     localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
 
+    // ===== CAMERA REMOTE SWITCH MODULE: open/receive the control channel =====
+    // Whichever side makes the offer also opens the data channel; the other
+    // side receives it via ondatachannel. Either way, setupControlChannel()
+    // wires up the same send/receive logic once it's ready.
+    if (amCaller) {
+      controlChannel = pc.createDataChannel('control');
+      setupControlChannel();
+    }
+    pc.ondatachannel = (event) => {
+      if (event.channel.label === 'control') {
+        controlChannel = event.channel;
+        setupControlChannel();
+      }
+    };
+    // ===== CAMERA REMOTE SWITCH MODULE END =====
+
     pc.onicecandidate = (event) => {
       if (event.candidate) send({ type: 'candidate', candidate: event.candidate });
     };
@@ -546,6 +600,11 @@
     amCaller = false;
     iceRestartAttempts = 0;
     resetRemoteZoom();
+    // CAMERA REMOTE SWITCH MODULE: the channel dies with the old pc, and any
+    // buttons we were showing described a connection that no longer exists.
+    controlChannel = null;
+    camSwitchOverlay.hidden = true;
+    camSwitchOverlay.innerHTML = '';
   }
 
   async function startCallFlow() {
@@ -745,6 +804,7 @@
   cameraSelect.addEventListener('change', () => {
     localStorage.setItem(LS_CAMERA, cameraSelect.value);
     if (localStream) startLocalStream();
+    sendCameraList(); // CAMERA REMOTE SWITCH MODULE: tell the other side which camera is now active
   });
   micSelect.addEventListener('change', () => {
     localStorage.setItem(LS_MIC, micSelect.value);
@@ -819,6 +879,82 @@
     cameraNamePanel.hidden = true;
   });
   // ===== CAMERA NAMING MODULE: JS END =====================================
+
+  // ===== CAMERA REMOTE SWITCH MODULE: JS START ============================
+  // Lets either side put buttons on screen for the OTHER side's cameras,
+  // and switch that side's active camera remotely (e.g. Maria taps a
+  // button on her phone, and the gym PC switches which camera it's
+  // sending — no need for whoever's on camera to touch the dropdown).
+  //
+  // How it works: a small WebRTC data channel ("control") rides alongside
+  // the existing video/audio connection. Each side sends its own camera
+  // list (deviceId + friendly label + which one is currently active)
+  // whenever that list changes; each side renders the OTHER side's list
+  // as buttons. Tapping a button sends back a "switch to this deviceId"
+  // request, which the receiving side applies using the exact same
+  // startLocalStream() path the dropdown already uses.
+  //
+  // Design goal: only touches the control channel and the overlay's own
+  // buttons — never reaches into pc's video/audio senders directly, and
+  // never changes what happens when using the dropdown locally. To
+  // remove: delete this block, the "CAMERA REMOTE SWITCH MODULE" hook
+  // lines in createPeerConnection(), teardownPeerConnection(),
+  // listDevices(), and the cameraSelect 'change' handler above, plus the
+  // matching HTML/CSS blocks.
+  const camSwitchOverlay = document.getElementById('camSwitchOverlay');
+
+  function setupControlChannel() {
+    controlChannel.onopen = () => sendCameraList();
+    controlChannel.onclose = () => {
+      camSwitchOverlay.hidden = true;
+      camSwitchOverlay.innerHTML = '';
+    };
+    controlChannel.onmessage = (event) => {
+      let msg;
+      try { msg = JSON.parse(event.data); } catch (e) { return; }
+      if (msg.type === 'camera-list') {
+        renderRemoteCameraButtons(msg.cameras || []);
+      } else if (msg.type === 'switch-camera') {
+        const opt = [...cameraSelect.options].find((o) => o.value === msg.deviceId);
+        if (!opt) return; // camera no longer present on this side — ignore
+        cameraSelect.value = msg.deviceId;
+        localStorage.setItem(LS_CAMERA, msg.deviceId);
+        if (localStream) startLocalStream().then(sendCameraList);
+      }
+    };
+  }
+
+  function sendCameraList() {
+    if (!controlChannel || controlChannel.readyState !== 'open') return;
+    const cameras = [...cameraSelect.options].map((opt) => ({
+      deviceId: opt.value,
+      label: opt.textContent,
+      active: opt.value === cameraSelect.value
+    }));
+    controlChannel.send(JSON.stringify({ type: 'camera-list', cameras }));
+  }
+
+  function renderRemoteCameraButtons(cameras) {
+    camSwitchOverlay.innerHTML = '';
+    if (cameras.length < 2) {
+      // Nothing to switch to — one camera or none reported.
+      camSwitchOverlay.hidden = true;
+      return;
+    }
+    cameras.forEach((cam) => {
+      const btn = document.createElement('button');
+      btn.textContent = cam.label;
+      if (cam.active) btn.classList.add('cam-switch-active');
+      btn.addEventListener('click', () => {
+        if (controlChannel && controlChannel.readyState === 'open') {
+          controlChannel.send(JSON.stringify({ type: 'switch-camera', deviceId: cam.deviceId }));
+        }
+      });
+      camSwitchOverlay.appendChild(btn);
+    });
+    camSwitchOverlay.hidden = false;
+  }
+  // ===== CAMERA REMOTE SWITCH MODULE: JS END ==============================
 
   // ===== DIAGNOSTICS MODULE START =====================================
   // Adds: (1) a live connection-stats feed + per-session history log,

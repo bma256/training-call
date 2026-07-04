@@ -66,6 +66,10 @@ wss.on('connection', (ws, req) => {
   const peers = rooms.get(room);
 
   if (peers.size >= 2) {
+    // DIAGNOSTIC LOGGING: shows up in Render's log viewer whenever someone
+    // gets turned away, so we can tell whether the room really has 2 live
+    // people or is holding onto a stale slot.
+    console.log(`[${new Date().toISOString()}] REJECTED (room full) room="${room}" currentPeers=${peers.size}`);
     send(ws, { type: 'full' });
     ws.close();
     return;
@@ -73,6 +77,7 @@ wss.on('connection', (ws, req) => {
 
   peers.add(ws);
   ws.roomId = room;
+  console.log(`[${new Date().toISOString()}] JOINED room="${room}" peers=${peers.size}`);
 
   // HEARTBEAT MODULE: mark this connection alive, and refresh that mark
   // whenever a pong comes back (browsers answer pings automatically).
@@ -103,6 +108,7 @@ wss.on('connection', (ws, req) => {
 
   ws.on('close', () => {
     peers.delete(ws);
+    console.log(`[${new Date().toISOString()}] LEFT room="${room}" remainingPeers=${peers.size}`);
     peers.forEach((peer) => send(peer, { type: 'peer-left' }));
     if (peers.size === 0) rooms.delete(room);
   });
@@ -119,6 +125,7 @@ setInterval(() => {
       // Didn't respond to the previous ping — treat as dead. terminate()
       // triggers the 'close' handler above, which cleans up the room the
       // same way a normal disconnect would.
+      console.log(`[${new Date().toISOString()}] HEARTBEAT: terminating unresponsive connection in room="${ws.roomId}"`);
       return ws.terminate();
     }
     ws.isAlive = false;

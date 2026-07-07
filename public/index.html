@@ -1253,15 +1253,22 @@
         const screenDetails = await window.getScreenDetails();
         const current = screenDetails.currentScreen;
         const other = screenDetails.screens.find((s) => s !== current);
+        console.log('[popout debug] all screens:', screenDetails.screens.map((s) => ({ left: s.left, top: s.top, availLeft: s.availLeft, availTop: s.availTop, availWidth: s.availWidth, availHeight: s.availHeight, isCurrent: s === current })));
         if (other) {
           const left = other.availLeft + 40;
           const top = other.availTop + 40;
           const width = Math.min(1000, other.availWidth - 80);
           const height = Math.min(800, other.availHeight - 80);
           features = `left=${left},top=${top},width=${width},height=${height}`;
+          console.log('[popout debug] chosen features:', features);
+        } else {
+          console.log('[popout debug] no "other" screen found - only one screen detected');
         }
+      } else {
+        console.log('[popout debug] window.getScreenDetails not supported in this browser');
       }
     } catch (e) {
+      console.log('[popout debug] error:', e);
       // Permission denied or API unsupported — fall through to the default features above.
     }
 

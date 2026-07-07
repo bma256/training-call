@@ -109,7 +109,7 @@
     flex-shrink: 0;
     background: var(--panel);
     transition: max-height 0.35s ease, opacity 0.25s ease, padding 0.35s ease;
-    max-height: 260px;
+    max-height: 340px;
     overflow: hidden;
   }
 
@@ -256,6 +256,19 @@
     <button id="cameraNameCancelBtn">Cancel</button>
   </div>
   <!-- ===== CAMERA NAMING MODULE: controls END ===== -->
+
+  <!-- ===== SELF-VIEW POPOUT MODULE: controls START =====
+       Opens your own camera feed in a separate window, sized for a second
+       monitor if the browser grants screen-placement permission (Chrome/
+       Edge) — otherwise a normal window you can drag over yourself. Shows
+       the UNMIRRORED feed: the small preview above is flipped via CSS for
+       comfort, but this window (like the feed Maria actually receives) is
+       not. Delete this whole <div> plus the matching JS block near the end
+       of the script to remove the feature; nothing else depends on it. -->
+  <div class="controls-row subtle-row">
+    <button id="popoutBtn" title="Open your camera feed in a separate window, e.g. for a second monitor">Pop Out My View</button>
+  </div>
+  <!-- ===== SELF-VIEW POPOUT MODULE: controls END ===== -->
 </footer>
 
 <script>
@@ -404,6 +417,7 @@
     }
     localStream = newStream;
     localVideo.srcObject = localStream;
+    popoutUpdateStream(); // SELF-VIEW POPOUT MODULE: keep the popped-out window's feed in sync with camera switches
 
     if (pc) {
       const videoTrack = localStream.getVideoTracks()[0];
@@ -1198,6 +1212,83 @@
     }
   }, 1000);
   // ===== DIAGNOSTICS MODULE END =======================================
+
+  // ===== SELF-VIEW POPOUT MODULE ========================================
+  // Opens your own camera feed in a separate browser window so you can see
+  // yourself the way Maria does — large, and unmirrored (the small preview
+  // on video#local is flipped via CSS for comfort, but the real feed sent
+  // over WebRTC, and the one shown in this popped-out window, is not; the
+  // popout has no stylesheet of its own so no flip is ever applied).
+  //
+  // On Chrome/Edge, the Window Management API (if the browser grants
+  // permission on first use) lets the window be placed directly on
+  // whichever screen isn't currently showing this page. On any other
+  // browser, or if permission is denied, it just opens as a normal window
+  // that can be dragged to a second monitor once and left there.
+  //
+  // Delete this whole block plus the matching HTML block in the footer to
+  // remove the feature entirely; nothing else in the app depends on it.
+  const popoutBtn = document.getElementById('popoutBtn');
+  let popoutWindow = null;
+  let popoutVideoEl = null;
+
+  function popoutUpdateStream() {
+    if (!popoutVideoEl) return;
+    try { popoutVideoEl.srcObject = localStream; } catch (e) {}
+  }
+
+  async function openSelfViewPopout() {
+    if (popoutWindow && !popoutWindow.closed) {
+      popoutWindow.focus();
+      return;
+    }
+
+    // Default features — used as-is if the Window Management API isn't
+    // available or permission isn't granted; the window can still be
+    // dragged to the second screen manually in that case.
+    let features = 'width=800,height=600';
+
+    try {
+      if (window.getScreenDetails) {
+        const screenDetails = await window.getScreenDetails();
+        const current = screenDetails.currentScreen;
+        const other = screenDetails.screens.find((s) => s !== current);
+        if (other) {
+          const left = other.availLeft + 40;
+          const top = other.availTop + 40;
+          const width = Math.min(1000, other.availWidth - 80);
+          const height = Math.min(800, other.availHeight - 80);
+          features = `left=${left},top=${top},width=${width},height=${height}`;
+        }
+      }
+    } catch (e) {
+      // Permission denied or API unsupported — fall through to the default features above.
+    }
+
+    popoutWindow = window.open('', 'selfViewPopout', features);
+    if (!popoutWindow) return; // popup blocked; nothing more we can do here
+
+    const doc = popoutWindow.document;
+    doc.title = 'My View';
+    const style = doc.createElement('style');
+    style.textContent = 'html,body{margin:0;padding:0;height:100%;background:#000;}' +
+      'video{width:100%;height:100%;object-fit:contain;background:#000;display:block;}';
+    doc.head.appendChild(style);
+    const video = doc.createElement('video');
+    video.id = 'popoutVideo';
+    video.autoplay = true;
+    video.playsInline = true;
+    video.muted = true;
+    doc.body.appendChild(video);
+
+    popoutVideoEl = video;
+    popoutUpdateStream();
+  }
+
+  if (popoutBtn) {
+    popoutBtn.addEventListener('click', () => { openSelfViewPopout(); });
+  }
+  // ===== SELF-VIEW POPOUT MODULE END =====================================
 
   init();
 })();

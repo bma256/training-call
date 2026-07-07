@@ -258,15 +258,14 @@
   <!-- ===== CAMERA NAMING MODULE: controls END ===== -->
 
   <!-- ===== SELF-VIEW POPOUT MODULE: controls START =====
-       Opens your own camera feed in a separate window, sized for a second
-       monitor if the browser grants screen-placement permission (Chrome/
-       Edge) — otherwise a normal window you can drag over yourself. Shows
-       the UNMIRRORED feed: the small preview above is flipped via CSS for
+       Opens your own camera feed in a plain separate window near the main
+       screen — drag/resize it onto a second monitor manually. Shows the
+       UNMIRRORED feed: the small preview above is flipped via CSS for
        comfort, but this window (like the feed Maria actually receives) is
        not. Delete this whole <div> plus the matching JS block near the end
        of the script to remove the feature; nothing else depends on it. -->
   <div class="controls-row subtle-row">
-    <button id="popoutBtn" title="Open your camera feed in a separate window, e.g. for a second monitor">Pop Out My View</button>
+    <button id="popoutBtn" title="Open your camera feed in a separate window you can drag to a second monitor">Pop Out My View</button>
   </div>
   <!-- ===== SELF-VIEW POPOUT MODULE: controls END ===== -->
 </footer>
@@ -1220,11 +1219,9 @@
   // over WebRTC, and the one shown in this popped-out window, is not; the
   // popout has no stylesheet of its own so no flip is ever applied).
   //
-  // On Chrome/Edge, the Window Management API (if the browser grants
-  // permission on first use) lets the window be placed directly on
-  // whichever screen isn't currently showing this page. On any other
-  // browser, or if permission is denied, it just opens as a normal window
-  // that can be dragged to a second monitor once and left there.
+  // Opens as a plain window near the main screen; drag/resize it onto the
+  // second monitor manually. No automatic screen-placement logic — kept
+  // deliberately simple.
   //
   // Delete this whole block plus the matching HTML block in the footer to
   // remove the feature entirely; nothing else in the app depends on it.
@@ -1243,36 +1240,11 @@
       return;
     }
 
-    // Default features — used as-is if the Window Management API isn't
-    // available or permission isn't granted; the window can still be
-    // dragged to the second screen manually in that case.
-    let features = 'width=800,height=600';
-
-    try {
-      if (window.getScreenDetails) {
-        const screenDetails = await window.getScreenDetails();
-        const current = screenDetails.currentScreen;
-        const other = screenDetails.screens.find((s) => s !== current);
-        console.log('[popout debug] all screens:', screenDetails.screens.map((s) => ({ left: s.left, top: s.top, availLeft: s.availLeft, availTop: s.availTop, availWidth: s.availWidth, availHeight: s.availHeight, isCurrent: s === current })));
-        if (other) {
-          const left = other.availLeft + 40;
-          const top = other.availTop + 40;
-          const width = Math.min(1000, other.availWidth - 80);
-          const height = Math.min(800, other.availHeight - 80);
-          features = `left=${left},top=${top},width=${width},height=${height}`;
-          console.log('[popout debug] chosen features:', features);
-        } else {
-          console.log('[popout debug] no "other" screen found - only one screen detected');
-        }
-      } else {
-        console.log('[popout debug] window.getScreenDetails not supported in this browser');
-      }
-    } catch (e) {
-      console.log('[popout debug] error:', e);
-      // Permission denied or API unsupported — fall through to the default features above.
-    }
-
-    popoutWindow = window.open('', 'selfViewPopout', features);
+    // Opens as a normal window near the main screen — no automatic
+    // screen-placement logic. Drag/resize it onto the other monitor
+    // manually; the browser will usually remember its size and position
+    // for next time.
+    popoutWindow = window.open('', 'selfViewPopout', 'width=800,height=600');
     if (!popoutWindow) return; // popup blocked; nothing more we can do here
 
     const doc = popoutWindow.document;

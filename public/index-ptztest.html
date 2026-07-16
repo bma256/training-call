@@ -1,0 +1,1670 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<title>Training Call — PTZ Test</title>
+<style>
+  :root {
+    --bg: #0b0d10;
+    --panel: #14171c;
+    --line: #232830;
+    --text: #e8eaed;
+    --muted: #8b93a1;
+    --accent: #4fd1c5;
+    --danger: #e0556f;
+    --warn: #e3b341;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    overscroll-behavior: none;
+  }
+  body { display: flex; flex-direction: column; height: 100vh; }
+
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 18px;
+    padding-top: calc(14px + env(safe-area-inset-top));
+    padding-left: calc(18px + env(safe-area-inset-left));
+    padding-right: calc(18px + env(safe-area-inset-right));
+    border-bottom: 1px solid var(--line);
+    flex-shrink: 0;
+    transition: max-height 0.35s ease, opacity 0.25s ease, padding 0.35s ease;
+    max-height: 200px;
+    overflow: hidden;
+  }
+  .title { font-size: 15px; font-weight: 600; letter-spacing: 0.2px; }
+  .status {
+    font-size: 13px; color: var(--muted);
+    display: flex; align-items: center; gap: 6px;
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex-shrink: 0; }
+  .dot.live { background: var(--accent); animation: pulse 2s infinite; }
+  .dot.warn { background: var(--warn); }
+  .dot.bad { background: var(--danger); }
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(79,209,197,0.5); }
+    70% { box-shadow: 0 0 0 6px rgba(79,209,197,0); }
+    100% { box-shadow: 0 0 0 0 rgba(79,209,197,0); }
+  }
+
+  main {
+    position: relative;
+    flex: 1;
+    background: #000;
+    overflow: hidden;
+    min-height: 0;
+  }
+  video#remote {
+    width: 100%; height: 100%; object-fit: contain; background: #000;
+    touch-action: none;
+    transform-origin: center center;
+  }
+  video#local {
+    position: absolute;
+    width: 19%;
+    max-width: 150px;
+    min-width: 84px;
+    right: calc(14px + env(safe-area-inset-right));
+    bottom: calc(14px + env(safe-area-inset-bottom));
+    border-radius: 10px;
+    border: 1px solid var(--line);
+    background: #000;
+    transform: scaleX(-1);
+    transition: width 0.2s ease, height 0.2s ease, opacity 0.2s ease, border-radius 0.2s ease;
+    cursor: pointer;
+  }
+  /* Tapping the self-preview shrinks it to a small, mostly-out-of-the-way
+     circle — useful when it's sitting on top of something the trainer
+     needs to see. Tap again to restore. */
+  video#local.minimized {
+    width: 44px !important;
+    max-width: 44px !important;
+    min-width: 44px !important;
+    height: 44px !important;
+    border-radius: 50%;
+    opacity: 0.6;
+    object-fit: cover;
+  }
+  .placeholder {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 10px; color: var(--muted); text-align: center; padding: 0 24px;
+  }
+  .placeholder .big { font-size: 16px; color: var(--text); }
+  .placeholder .small { font-size: 13px; max-width: 320px; }
+
+  footer {
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
+    padding: 14px 16px calc(14px + env(safe-area-inset-bottom));
+    padding-left: calc(16px + env(safe-area-inset-left));
+    padding-right: calc(16px + env(safe-area-inset-right));
+    border-top: 1px solid var(--line);
+    flex-shrink: 0;
+    background: var(--panel);
+    transition: max-height 0.35s ease, opacity 0.25s ease, padding 0.35s ease;
+    max-height: 340px;
+    overflow: hidden;
+  }
+
+  /* Fullscreen auto-hide: header/footer collapse away after a few seconds of
+     inactivity so the video fills the screen, and fade back in on any
+     mouse move, tap, or keypress. */
+  body.chrome-hidden header,
+  body.chrome-hidden footer {
+    max-height: 0;
+    opacity: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+    border-color: transparent;
+  }
+  select {
+    background: var(--bg); color: var(--text);
+    border: 1px solid var(--line); border-radius: 8px;
+    padding: 8px 10px; font-size: 13px; max-width: 170px;
+  }
+  button {
+    border: 1px solid var(--line); background: var(--bg); color: var(--text);
+    border-radius: 10px; padding: 10px 16px; font-size: 14px; font-weight: 500;
+    cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); }
+  button.active-off { background: rgba(224,85,111,0.15); border-color: var(--danger); color: var(--danger); }
+  button.primary { background: var(--accent); color: #06201d; border-color: var(--accent); }
+  button.primary.end { background: var(--danger); border-color: var(--danger); color: #fff; }
+  button:disabled { opacity: 0.4; cursor: default; }
+
+  .controls-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; justify-content: center; }
+
+  @media (max-width: 520px) {
+    select { max-width: 130px; font-size: 12px; }
+    button { padding: 9px 12px; font-size: 13px; }
+  }
+
+  /* ===== DIAGNOSTICS MODULE: CSS START =====
+     Everything between these markers can be deleted as a block to fully
+     remove the low-bandwidth toggle's styling. It does not affect any
+     other rule above it. */
+  .subtle-row { opacity: 0.65; }
+  .subtle-row button {
+    padding: 6px 12px; font-size: 12px; border-radius: 8px;
+  }
+  /* ===== DIAGNOSTICS MODULE: CSS END ===== */
+
+  /* ===== CAMERA NAMING MODULE: CSS START =====
+     Styling for the "Name Camera" panel. Delete this block (and the
+     matching HTML / JS blocks) to remove the feature entirely. */
+  #cameraNamePanel { flex-wrap: wrap; }
+  #cameraNamePanel[hidden] { display: none; } /* without this, .controls-row's display:flex wins the tie and the panel never actually hides */
+  .cam-name-label { font-size: 11px; color: var(--muted); width: 100%; text-align: center; }
+  /* ===== CAMERA NAMING MODULE: CSS END ===== */
+
+  /* ===== CAMERA REMOTE SWITCH MODULE: CSS START =====
+     A small floating bar over the top of the remote video, showing one
+     button per camera the OTHER side has available, so either person can
+     ask the other side to switch cameras without touching their own
+     dropdown. Delete this block (and the matching HTML/JS blocks) to
+     remove the feature entirely. */
+  #camSwitchOverlay {
+    position: absolute;
+    top: calc(10px + env(safe-area-inset-top));
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 5;
+    display: flex;
+    gap: 8px;
+    max-width: calc(100% - 24px);
+    overflow-x: auto;
+    background: rgba(20,23,28,0.78);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 6px;
+  }
+  #camSwitchOverlay[hidden] { display: none; }
+  #camSwitchOverlay button {
+    padding: 7px 12px; font-size: 12px; border-radius: 8px; white-space: nowrap; flex-shrink: 0;
+  }
+  #camSwitchOverlay button.cam-switch-active {
+    border-color: var(--accent); color: var(--accent);
+  }
+  /* ===== CAMERA REMOTE SWITCH MODULE: CSS END ===== */
+
+  /* ===== TRAINER PTZ CONTROL MODULE: CSS START =====
+     Floating control panel shown ONLY on the trainer side (the side whose
+     peer has a PTZ camera and whose own camera has none), anchored over the
+     bottom-left of the video so it clears the bottom-right self-view PiP and
+     the top-center camera-switch bar. Delete this block (and the matching
+     HTML/JS blocks) to remove the feature entirely. */
+  #ptzPanel {
+    position: absolute;
+    left: calc(12px + env(safe-area-inset-left));
+    bottom: calc(14px + env(safe-area-inset-bottom));
+    z-index: 6;
+    width: 208px;
+    background: rgba(20,23,28,0.85);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 10px;
+    -webkit-backdrop-filter: blur(4px);
+    backdrop-filter: blur(4px);
+    user-select: none;
+  }
+  #ptzPanel[hidden] { display: none; }
+  #ptzPanel.collapsed .ptz-body { display: none; }
+  .ptz-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .ptz-title { font-size: 12px; font-weight: 600; color: var(--text); }
+  .ptz-collapse { padding: 2px 9px; font-size: 13px; border-radius: 7px; line-height: 1; }
+  .ptz-readout { font-size: 11px; color: var(--muted); margin: 7px 0 8px; min-height: 14px; font-variant-numeric: tabular-nums; letter-spacing: 0.2px; }
+  .ptz-pad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+  .ptz-pad button { padding: 11px 0; font-size: 15px; border-radius: 9px; }
+  .ptz-pad .ptz-empty { visibility: hidden; }
+  .ptz-zoomrow { display: flex; gap: 6px; margin-top: 6px; }
+  .ptz-zoomrow button { flex: 1; padding: 9px 0; font-size: 13px; border-radius: 9px; }
+  .ptz-steprow { display: flex; align-items: center; gap: 8px; margin-top: 9px; font-size: 11px; color: var(--muted); }
+  .ptz-steprow .seg { display: flex; gap: 4px; }
+  .ptz-steprow .seg button { padding: 5px 11px; font-size: 11px; border-radius: 7px; }
+  .ptz-steprow .seg button.on { background: var(--accent); color: #06201d; border-color: var(--accent); }
+  .ptz-presets { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 9px; }
+  .ptz-presets button { padding: 8px 2px; font-size: 11px; border-radius: 8px; }
+  .ptz-presets button.saved { border-color: var(--accent); color: var(--accent); }
+  .ptz-inv { display: flex; gap: 14px; margin-top: 9px; font-size: 11px; color: var(--muted); }
+  .ptz-inv label { display: flex; align-items: center; gap: 5px; cursor: pointer; }
+  .ptz-row2 { display: flex; gap: 6px; margin-top: 9px; }
+  .ptz-row2 button { flex: 1; padding: 8px 0; font-size: 11px; border-radius: 8px; }
+  #ptzSaveRow[hidden] { display: none; }
+  /* ===== TRAINER PTZ CONTROL MODULE: CSS END ===== */
+</style>
+</head>
+<body>
+
+<header>
+  <div class="title">Training Call — PTZ Test</div>
+  <div class="status"><span class="dot" id="statusDot"></span><span id="statusText">Not connected</span></div>
+</header>
+
+<main>
+  <video id="remote" autoplay playsinline></video>
+  <div class="placeholder" id="placeholder">
+    <div class="big">Connecting…</div>
+    <div class="small" id="placeholderSub">This starts automatically. Send this same link to the other side — whoever opens it second connects the call.</div>
+  </div>
+  <video id="local" autoplay playsinline muted></video>
+  <!-- ===== CAMERA REMOTE SWITCH MODULE: overlay START =====
+       Populated at runtime with one button per camera the other side
+       reports having. Hidden whenever the other side has fewer than 2
+       cameras (nothing useful to switch to). -->
+  <div id="camSwitchOverlay" hidden></div>
+  <!-- ===== CAMERA REMOTE SWITCH MODULE: overlay END ===== -->
+
+  <!-- ===== TRAINER PTZ CONTROL MODULE: panel START =====
+       Shown only on the trainer side (peer has a PTZ camera, this side's own
+       camera does not). Drives the gym camera over the existing 'control'
+       data channel. Delete this block (and the matching CSS/JS blocks) to
+       remove the feature entirely. -->
+  <div id="ptzPanel" hidden>
+    <div class="ptz-head">
+      <span class="ptz-title">Camera Control</span>
+      <button class="ptz-collapse" id="ptzCollapse" type="button">–</button>
+    </div>
+    <div class="ptz-body" id="ptzBody">
+      <div class="ptz-readout" id="ptzReadout"></div>
+      <div class="ptz-pad">
+        <span class="ptz-empty"></span>
+        <button id="ptzTiltUp" type="button">▲</button>
+        <span class="ptz-empty"></span>
+        <button id="ptzPanLeft" type="button">◀</button>
+        <button id="ptzCenterBtn" type="button" title="Level &amp; wide">◉</button>
+        <button id="ptzPanRight" type="button">▶</button>
+        <span class="ptz-empty"></span>
+        <button id="ptzTiltDown" type="button">▼</button>
+        <span class="ptz-empty"></span>
+      </div>
+      <div class="ptz-zoomrow">
+        <button id="ptzZoomOut" type="button">– Zoom</button>
+        <button id="ptzZoomIn" type="button">Zoom +</button>
+      </div>
+      <div class="ptz-steprow">
+        <span>Step</span>
+        <span class="seg">
+          <button id="ptzStepFine" class="on" type="button">Fine</button>
+          <button id="ptzStepCoarse" type="button">Coarse</button>
+        </span>
+      </div>
+      <div class="ptz-presets">
+        <button class="ptz-preset" data-slot="fullBody" type="button">Full Body</button>
+        <button class="ptz-preset" data-slot="lowerBody" type="button">Lower Body</button>
+        <button class="ptz-preset" data-slot="feet" type="button">Feet</button>
+      </div>
+      <div class="ptz-inv">
+        <label><input type="checkbox" id="ptzInvTilt"> Invert tilt</label>
+        <label><input type="checkbox" id="ptzInvPan"> Invert pan</label>
+      </div>
+      <div class="ptz-row2">
+        <button id="ptzSaveToggle" type="button">Set presets…</button>
+      </div>
+      <div class="ptz-presets" id="ptzSaveRow" hidden>
+        <button class="ptz-save" data-slot="fullBody" type="button">Save→Full</button>
+        <button class="ptz-save" data-slot="lowerBody" type="button">Save→Lower</button>
+        <button class="ptz-save" data-slot="feet" type="button">Save→Feet</button>
+      </div>
+    </div>
+  </div>
+  <!-- ===== TRAINER PTZ CONTROL MODULE: panel END ===== -->
+</main>
+
+<footer>
+  <div class="controls-row">
+    <select id="cameraSelect" title="Camera"></select>
+    <select id="micSelect" title="Microphone"></select>
+  </div>
+  <div class="controls-row">
+    <button id="muteBtn">Mute</button>
+    <button id="camBtn">Camera off</button>
+    <button id="fullscreenBtn">Fullscreen</button>
+    <button id="callBtn" class="primary">Start Call</button>
+  </div>
+  <!-- ===== DIAGNOSTICS MODULE: bandwidth toggle button START =====
+       Delete this whole <div> to remove the low-bandwidth control from
+       the page. No other markup depends on it. -->
+  <div class="controls-row subtle-row">
+    <button id="bandwidthBtn" title="Lower outgoing video quality to save bandwidth">Low Bandwidth: Off</button>
+  </div>
+  <!-- ===== DIAGNOSTICS MODULE: bandwidth toggle button END ===== -->
+
+  <!-- ===== CAMERA NAMING MODULE: controls START =====
+       Lets you assign a persistent custom name (e.g. "GymE-1") to whichever
+       camera is currently selected in the dropdown above — useful when two
+       cameras are the same model and the browser shows the same generic
+       label for both. Delete this whole block (both <div> rows) plus the
+       matching CSS and JS blocks to remove the feature; nothing else
+       depends on it. -->
+  <div class="controls-row subtle-row">
+    <button id="nameCameraBtn" title="Give the currently selected camera a custom name">Name Camera</button>
+  </div>
+  <div class="controls-row subtle-row" id="cameraNamePanel" hidden>
+    <span class="cam-name-label" id="cameraNamePanelLabel"></span>
+    <button class="cam-name-preset" data-name="GymE-1">GymE-1</button>
+    <button class="cam-name-preset" data-name="GymE-2">GymE-2</button>
+    <button id="cameraNameCustomBtn">Custom…</button>
+    <button id="cameraNameClearBtn">Clear name</button>
+    <button id="cameraNameCancelBtn">Cancel</button>
+  </div>
+  <!-- ===== CAMERA NAMING MODULE: controls END ===== -->
+
+  <!-- ===== SELF-VIEW POPOUT MODULE: controls START =====
+       Opens your own camera feed in a plain separate window near the main
+       screen — drag/resize it onto a second monitor manually. Shows the
+       UNMIRRORED feed: the small preview above is flipped via CSS for
+       comfort, but this window (like the feed Maria actually receives) is
+       not. Delete this whole <div> plus the matching JS block near the end
+       of the script to remove the feature; nothing else depends on it. -->
+  <div class="controls-row subtle-row">
+    <button id="popoutBtn" title="Open your camera feed in a separate window you can drag to a second monitor">Pop Out My View</button>
+  </div>
+  <!-- ===== SELF-VIEW POPOUT MODULE: controls END ===== -->
+</footer>
+
+<script>
+(() => {
+  const remoteVideo = document.getElementById('remote');
+  const localVideo = document.getElementById('local');
+  const cameraSelect = document.getElementById('cameraSelect');
+  const micSelect = document.getElementById('micSelect');
+  const muteBtn = document.getElementById('muteBtn');
+  const camBtn = document.getElementById('camBtn');
+  const fullscreenBtn = document.getElementById('fullscreenBtn');
+  const callBtn = document.getElementById('callBtn');
+  const statusDot = document.getElementById('statusDot');
+  const statusText = document.getElementById('statusText');
+  const placeholder = document.getElementById('placeholder');
+  const placeholderSub = document.getElementById('placeholderSub');
+
+  const LS_CAMERA = 'trainingCall:cameraId';
+  const LS_MIC = 'trainingCall:micId';
+  const LS_HAS_CONNECTED = 'trainingCall:hasConnectedBefore';
+
+  const params = new URLSearchParams(location.search);
+  const room = params.get('room') || 'ptz-test';
+
+  // Google's public STUN servers — free, no signup, fine for most home networks.
+  // ICE tries these (and any direct path) first; they're enough for wifi-to-wifi calls.
+  //
+  // TURN fallback (Metered.ca free tier, 20GB/month) — only used if a direct/STUN
+  // path can't be found (e.g. restrictive cellular networks). Credentials below are
+  // tied to our free account quota, not a security secret — TURN creds are meant to
+  // ship to the client, that's how the protocol works. If the call connects fine
+  // without it (most sessions will), these entries simply go unused.
+  const ICE_SERVERS = [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun.relay.metered.ca:80' },
+    {
+      urls: 'turn:standard.relay.metered.ca:80',
+      username: '3781fe1f6d857864a846de77',
+      credential: 'epirZplvHuT7vJb1'
+    },
+    {
+      urls: 'turn:standard.relay.metered.ca:80?transport=tcp',
+      username: '3781fe1f6d857864a846de77',
+      credential: 'epirZplvHuT7vJb1'
+    },
+    {
+      urls: 'turn:standard.relay.metered.ca:443',
+      username: '3781fe1f6d857864a846de77',
+      credential: 'epirZplvHuT7vJb1'
+    },
+    {
+      urls: 'turns:standard.relay.metered.ca:443?transport=tcp',
+      username: '3781fe1f6d857864a846de77',
+      credential: 'epirZplvHuT7vJb1'
+    }
+  ];
+
+  let localStream = null;
+  let pc = null;
+  let ws = null;
+  let inCall = false;
+  let pendingCandidates = [];
+  let amCaller = false; // only the caller initiates ICE restarts, to avoid both sides colliding
+  let controlChannel = null; // CAMERA REMOTE SWITCH MODULE: data channel for cross-side camera control
+  let disconnectTimer = null;
+  let iceRestartAttempts = 0;
+  const MAX_ICE_RESTARTS = 4;
+
+  // Pinch-to-zoom / double-tap-to-zoom on the remote video specifically.
+  // This is deliberately implemented as our own CSS transform on the video
+  // element rather than relying on the browser's page-level zoom (which we
+  // disabled in the viewport meta tag, since native page zoom on a live
+  // video stream caused freezes/disconnects). Scoping it to just this
+  // element keeps the rest of the page (and the connection) untouched.
+  let remoteZoom = 1;
+  let remotePanX = 0;
+  let remotePanY = 0;
+  let pinchStartDist = 0;
+  let pinchStartZoom = 1;
+  let lastTapTime = 0;
+  let lastTapX = 0;
+  let lastTapY = 0;
+  let panActive = false;
+  let panStartX = 0;
+  let panStartY = 0;
+  let panOriginX = 0;
+  let panOriginY = 0;
+  const MAX_REMOTE_ZOOM = 4;
+  const DOUBLE_TAP_ZOOM = 2.5;
+
+  function setStatus(text, mode) {
+    statusText.textContent = text;
+    statusDot.className = 'dot' + (mode ? ' ' + mode : '');
+  }
+
+  function setPlaceholder(big, small, show) {
+    placeholder.style.display = show ? 'flex' : 'none';
+    if (big !== null) placeholder.querySelector('.big').textContent = big;
+    if (small !== undefined && small !== null) placeholderSub.textContent = small;
+  }
+
+  async function listDevices() {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const prevCam = cameraSelect.value || localStorage.getItem(LS_CAMERA);
+    const prevMic = micSelect.value || localStorage.getItem(LS_MIC);
+    cameraSelect.innerHTML = '';
+    micSelect.innerHTML = '';
+    let camCount = 0, micCount = 0;
+    devices.forEach((d) => {
+      if (d.kind === 'videoinput') {
+        camCount++;
+        const opt = document.createElement('option');
+        opt.value = d.deviceId;
+        opt.textContent = d.label || `Camera ${camCount}`;
+        rawCameraLabels[d.deviceId] = opt.textContent; // CAMERA NAMING MODULE
+        cameraSelect.appendChild(opt);
+      } else if (d.kind === 'audioinput') {
+        micCount++;
+        const opt = document.createElement('option');
+        opt.value = d.deviceId;
+        opt.textContent = d.label || `Microphone ${micCount}`;
+        micSelect.appendChild(opt);
+      }
+    });
+    if (prevCam && [...cameraSelect.options].some((o) => o.value === prevCam)) cameraSelect.value = prevCam;
+    if (prevMic && [...micSelect.options].some((o) => o.value === prevMic)) micSelect.value = prevMic;
+    relabelCameraOptions(); // CAMERA NAMING MODULE: apply any saved custom camera names
+    sendCameraList(); // CAMERA REMOTE SWITCH MODULE: let the other side know our current camera options
+  }
+
+  async function startLocalStream() {
+    const videoId = cameraSelect.value || undefined;
+    const audioId = micSelect.value || undefined;
+    const constraints = {
+      // TRAINER PTZ CONTROL MODULE: pan/tilt/zoom:true requests the PTZ
+      // capability so the active track exposes motor controls to
+      // applyConstraints(). On a non-PTZ webcam these are simply ignored.
+      video: videoId
+        ? { deviceId: { exact: videoId }, pan: true, tilt: true, zoom: true, width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } }
+        : { pan: true, tilt: true, zoom: true, width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } },
+      audio: audioId ? { deviceId: { exact: audioId } } : true
+    };
+
+    const newStream = await navigator.mediaDevices.getUserMedia(constraints);
+
+    if (localStream) {
+      localStream.getTracks().forEach((t) => t.stop());
+    }
+    localStream = newStream;
+    localVideo.srcObject = localStream;
+    popoutUpdateStream(); // SELF-VIEW POPOUT MODULE: keep the popped-out window's feed in sync with camera switches
+
+    if (pc) {
+      const videoTrack = localStream.getVideoTracks()[0];
+      const audioTrack = localStream.getAudioTracks()[0];
+      const senders = pc.getSenders();
+      const vSender = senders.find((s) => s.track && s.track.kind === 'video');
+      const aSender = senders.find((s) => s.track && s.track.kind === 'audio');
+      if (vSender && videoTrack) vSender.replaceTrack(videoTrack);
+      if (aSender && audioTrack) aSender.replaceTrack(audioTrack);
+    }
+
+    ptzReadActiveTrack(); // TRAINER PTZ CONTROL MODULE: detect PTZ on the new track + tell the peer
+  }
+
+  async function init() {
+    try {
+      // Request permission once with defaults so device labels become visible,
+      // then list devices properly.
+      const tempStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      tempStream.getTracks().forEach((t) => t.stop());
+      await listDevices();
+      navigator.mediaDevices.ondevicechange = listDevices;
+      // Opening the page is meant to be the only step on repeat visits — but
+      // on the very first visit from a given browser, skip the auto-start so
+      // there's a calm window (with Safari's normal toolbar still visible)
+      // to set up "Add to Home Screen" before the page takes over the screen.
+      if (localStorage.getItem(LS_HAS_CONNECTED)) {
+        startCallFlow();
+      } else {
+        setPlaceholder('Ready when you are', 'First time here: feel free to set up "Add to Home Screen" now, then tap Start Call. After this, it\'ll connect automatically every time.', true);
+      }
+    } catch (err) {
+      setPlaceholder('Camera or microphone blocked', 'Allow camera and microphone access for this page in your browser settings, then reload.', true);
+      setStatus('Permission needed', 'bad');
+    }
+  }
+
+  function wsUrl() {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${proto}//${location.host}?room=${encodeURIComponent(room)}`;
+  }
+
+  function connectSignaling() {
+    ws = new WebSocket(wsUrl());
+
+    ws.onopen = () => {
+      setStatus('Waiting for the other side to join…', 'warn');
+    };
+
+    ws.onmessage = async (event) => {
+      const msg = JSON.parse(event.data);
+
+      if (msg.type === 'joined') {
+        if (msg.peers === 2) {
+          amCaller = true;
+          await createPeerConnection();
+          await makeOffer();
+        }
+      } else if (msg.type === 'peer-joined') {
+        setStatus('Other side joined — connecting…', 'warn');
+        if (!pc) await createPeerConnection();
+      } else if (msg.type === 'offer') {
+        if (!pc) await createPeerConnection();
+        await pc.setRemoteDescription(new RTCSessionDescription(msg));
+        await flushPendingCandidates();
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        send({ type: 'answer', sdp: answer.sdp });
+      } else if (msg.type === 'answer') {
+        await pc.setRemoteDescription(new RTCSessionDescription(msg));
+        await flushPendingCandidates();
+      } else if (msg.type === 'candidate') {
+        if (pc && pc.remoteDescription) {
+          try { await pc.addIceCandidate(new RTCIceCandidate(msg.candidate)); } catch (e) {}
+        } else {
+          pendingCandidates.push(msg.candidate);
+        }
+      } else if (msg.type === 'peer-left') {
+        setStatus('Other side disconnected', 'warn');
+        setPlaceholder('Call ended', 'The other side left. Tap Start Call to begin a new session.', true);
+        teardownPeerConnection();
+      } else if (msg.type === 'full') {
+        setStatus('Room already has two people', 'bad');
+        setPlaceholder('Call already in progress', 'This link is already connected on two devices.', true);
+      }
+    };
+
+    ws.onclose = () => {
+      if (inCall) {
+        setStatus('Signaling lost — retrying…', 'bad');
+        setTimeout(() => { if (inCall) connectSignaling(); }, 2000);
+      }
+    };
+
+    ws.onerror = () => {
+      setStatus('Connection error', 'bad');
+    };
+  }
+
+  function send(msg) {
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
+  }
+
+  async function flushPendingCandidates() {
+    for (const c of pendingCandidates) {
+      try { await pc.addIceCandidate(new RTCIceCandidate(c)); } catch (e) {}
+    }
+    pendingCandidates = [];
+  }
+
+  async function createPeerConnection() {
+    pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+
+    localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
+
+    // ===== CAMERA REMOTE SWITCH MODULE: open/receive the control channel =====
+    // Whichever side makes the offer also opens the data channel; the other
+    // side receives it via ondatachannel. Either way, setupControlChannel()
+    // wires up the same send/receive logic once it's ready.
+    if (amCaller) {
+      controlChannel = pc.createDataChannel('control');
+      setupControlChannel();
+    }
+    pc.ondatachannel = (event) => {
+      if (event.channel.label === 'control') {
+        controlChannel = event.channel;
+        setupControlChannel();
+      }
+    };
+    // ===== CAMERA REMOTE SWITCH MODULE END =====
+
+    pc.onicecandidate = (event) => {
+      if (event.candidate) send({ type: 'candidate', candidate: event.candidate });
+    };
+
+    pc.ontrack = (event) => {
+      remoteVideo.srcObject = event.streams[0];
+      setPlaceholder(null, null, false);
+    };
+
+    pc.onconnectionstatechange = () => {
+      if (!pc) return;
+      if (pc.connectionState === 'connected') {
+        setStatus('Connected', 'live');
+        setPlaceholder(null, null, false);
+        clearTimeout(disconnectTimer);
+        iceRestartAttempts = 0; // reset once the connection is stably back
+        localStorage.setItem(LS_HAS_CONNECTED, 'true');
+      } else if (pc.connectionState === 'disconnected') {
+        // 'disconnected' often self-heals within a few seconds (a brief
+        // Wi-Fi blip, a tab losing focus momentarily, etc.) — give it a
+        // short grace period before trying anything ourselves.
+        setStatus('Connection wobbling — recovering…', 'warn');
+        clearTimeout(disconnectTimer);
+        disconnectTimer = setTimeout(attemptIceRestart, 4000);
+      } else if (pc.connectionState === 'failed') {
+        setStatus('Connection lost — reconnecting…', 'bad');
+        clearTimeout(disconnectTimer);
+        attemptIceRestart();
+      } else if (pc.connectionState === 'connecting') {
+        setStatus('Connecting…', 'warn');
+      }
+    };
+  }
+
+  async function attemptIceRestart() {
+    if (!pc || !amCaller) return; // only the caller renegotiates, to avoid both sides colliding
+    if (pc.connectionState === 'connected') return; // already recovered on its own
+    if (iceRestartAttempts >= MAX_ICE_RESTARTS) {
+      setStatus('Connection lost', 'bad');
+      setPlaceholder('Connection lost', 'Tap End Call, then Start Call again to reconnect.', true);
+      return;
+    }
+    iceRestartAttempts++;
+    try {
+      const offer = await pc.createOffer({ iceRestart: true });
+      await pc.setLocalDescription(offer);
+      send({ type: 'offer', sdp: offer.sdp });
+    } catch (e) {
+      // If this attempt fails to even start, the next state-change event
+      // (or the timer above) will trigger another try, up to the cap.
+    }
+  }
+
+  async function makeOffer() {
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    send({ type: 'offer', sdp: offer.sdp });
+  }
+
+  function teardownPeerConnection() {
+    if (pc) { pc.close(); pc = null; }
+    remoteVideo.srcObject = null;
+    pendingCandidates = [];
+    clearTimeout(disconnectTimer);
+    amCaller = false;
+    iceRestartAttempts = 0;
+    resetRemoteZoom();
+    // CAMERA REMOTE SWITCH MODULE: the channel dies with the old pc, and any
+    // buttons we were showing described a connection that no longer exists.
+    controlChannel = null;
+    camSwitchOverlay.hidden = true;
+    camSwitchOverlay.innerHTML = '';
+    // TRAINER PTZ CONTROL MODULE: the channel is gone, so any control panel
+    // we were showing describes a connection that no longer exists.
+    ptzRemote.available = false;
+    if (ptzApplyTimer) { clearTimeout(ptzApplyTimer); ptzApplyTimer = null; }
+    ptzPendingTarget = null;
+    ptzRenderPanel();
+  }
+
+  async function startCallFlow() {
+    if (inCall) return;
+    inCall = true;
+    callBtn.textContent = 'End Call';
+    callBtn.classList.add('end');
+    setPlaceholder('Connecting…', 'Waiting for the other side to join…', true);
+    try {
+      if (!localStream) await startLocalStream();
+      connectSignaling();
+    } catch (err) {
+      setStatus('Could not access camera/mic', 'bad');
+      inCall = false;
+      callBtn.textContent = 'Start Call';
+      callBtn.classList.remove('end');
+    }
+  }
+
+  function endCallFlow() {
+    inCall = false;
+    callBtn.textContent = 'Start Call';
+    callBtn.classList.remove('end');
+    teardownPeerConnection();
+    if (ws) { ws.close(); ws = null; }
+    setStatus('Not connected', '');
+    setPlaceholder('Call ended', 'Tap Start Call to begin a new session.', true);
+  }
+
+  callBtn.addEventListener('click', () => {
+    if (!inCall) startCallFlow(); else endCallFlow();
+  });
+
+  // --- Fullscreen + auto-hiding controls -----------------------------------
+  // Goal: while in fullscreen, the header and footer fade away after a few
+  // seconds so the video fills the whole screen, then reappear the moment
+  // the mouse moves, the screen is tapped, or a key is pressed.
+  let hideTimer = null;
+
+  function revealChrome() {
+    document.body.classList.remove('chrome-hidden');
+    clearTimeout(hideTimer);
+    if (document.fullscreenElement) {
+      hideTimer = setTimeout(() => {
+        document.body.classList.add('chrome-hidden');
+      }, 3000);
+    }
+  }
+
+  document.addEventListener('mousemove', revealChrome);
+  document.addEventListener('touchstart', revealChrome);
+  document.addEventListener('keydown', revealChrome);
+
+  document.addEventListener('fullscreenchange', () => {
+    if (document.fullscreenElement) {
+      fullscreenBtn.textContent = 'Exit Fullscreen';
+      revealChrome();
+    } else {
+      fullscreenBtn.textContent = 'Fullscreen';
+      clearTimeout(hideTimer);
+      document.body.classList.remove('chrome-hidden');
+    }
+  });
+
+  fullscreenBtn.addEventListener('click', () => {
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen().catch(() => {});
+    } else {
+      document.exitFullscreen();
+    }
+  });
+
+  // iOS (iPhone/iPad) doesn't reliably support page-level fullscreen — on
+  // some iOS versions the API reports itself as "available" but actually
+  // calling it on a page like this one freezes the video. Rather than trust
+  // that self-reported support, detect iOS directly and hide the button
+  // there unconditionally. The real fullscreen equivalent on iOS is opening
+  // this page from a Home Screen icon (Share → Add to Home Screen), which
+  // hides Safari's own chrome automatically and works reliably.
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1); // iPadOS often reports as Mac
+  const supportsPageFullscreen = !isIOS && document.fullscreenEnabled &&
+    typeof document.documentElement.requestFullscreen === 'function';
+  if (!supportsPageFullscreen) {
+    fullscreenBtn.style.display = 'none';
+  }
+
+  muteBtn.addEventListener('click', () => {
+    if (!localStream) return;
+    const track = localStream.getAudioTracks()[0];
+    if (!track) return;
+    track.enabled = !track.enabled;
+    muteBtn.textContent = track.enabled ? 'Mute' : 'Unmute';
+    muteBtn.classList.toggle('active-off', !track.enabled);
+  });
+
+  camBtn.addEventListener('click', () => {
+    if (!localStream) return;
+    const track = localStream.getVideoTracks()[0];
+    if (!track) return;
+    track.enabled = !track.enabled;
+    camBtn.textContent = track.enabled ? 'Camera on' : 'Camera off';
+    camBtn.classList.toggle('active-off', !track.enabled);
+  });
+
+  localVideo.addEventListener('click', () => {
+    localVideo.classList.toggle('minimized');
+  });
+
+  function applyRemoteTransform() {
+    remoteVideo.style.transform = `translate(${remotePanX}px, ${remotePanY}px) scale(${remoteZoom})`;
+  }
+
+  function clampRemotePan() {
+    const maxOffset = (remoteZoom - 1) * 250;
+    remotePanX = Math.max(-maxOffset, Math.min(maxOffset, remotePanX));
+    remotePanY = Math.max(-maxOffset, Math.min(maxOffset, remotePanY));
+  }
+
+  function resetRemoteZoom() {
+    remoteZoom = 1;
+    remotePanX = 0;
+    remotePanY = 0;
+    applyRemoteTransform();
+  }
+
+  remoteVideo.addEventListener('touchstart', (e) => {
+    if (e.touches.length === 2) {
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      pinchStartDist = Math.hypot(dx, dy);
+      pinchStartZoom = remoteZoom;
+      panActive = false;
+    } else if (e.touches.length === 1) {
+      const t = e.touches[0];
+      const now = Date.now();
+      const movedSinceLastTap = Math.hypot(t.clientX - lastTapX, t.clientY - lastTapY);
+
+      if (now - lastTapTime < 350 && movedSinceLastTap < 40) {
+        // Double tap: toggle between normal and a fixed zoomed-in level.
+        remoteZoom = remoteZoom > 1 ? 1 : DOUBLE_TAP_ZOOM;
+        remotePanX = 0;
+        remotePanY = 0;
+        applyRemoteTransform();
+        lastTapTime = 0;
+      } else {
+        lastTapTime = now;
+        lastTapX = t.clientX;
+        lastTapY = t.clientY;
+      }
+
+      if (remoteZoom > 1) {
+        panActive = true;
+        panStartX = t.clientX;
+        panStartY = t.clientY;
+        panOriginX = remotePanX;
+        panOriginY = remotePanY;
+      }
+    }
+  }, { passive: true });
+
+  remoteVideo.addEventListener('touchmove', (e) => {
+    if (e.touches.length === 2 && pinchStartDist > 0) {
+      e.preventDefault();
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      const dist = Math.hypot(dx, dy);
+      remoteZoom = Math.min(MAX_REMOTE_ZOOM, Math.max(1, pinchStartZoom * (dist / pinchStartDist)));
+      clampRemotePan();
+      applyRemoteTransform();
+    } else if (e.touches.length === 1 && panActive && remoteZoom > 1) {
+      e.preventDefault();
+      const t = e.touches[0];
+      remotePanX = panOriginX + (t.clientX - panStartX);
+      remotePanY = panOriginY + (t.clientY - panStartY);
+      clampRemotePan();
+      applyRemoteTransform();
+    }
+  }, { passive: false });
+
+  remoteVideo.addEventListener('touchend', () => {
+    panActive = false;
+    pinchStartDist = 0;
+    if (remoteZoom < 1.05) resetRemoteZoom();
+  }, { passive: true });
+
+  // Also support double-click on desktop for the same zoom toggle.
+  remoteVideo.addEventListener('dblclick', () => {
+    remoteZoom = remoteZoom > 1 ? 1 : DOUBLE_TAP_ZOOM;
+    remotePanX = 0;
+    remotePanY = 0;
+    applyRemoteTransform();
+  });
+
+  window.addEventListener('orientationchange', resetRemoteZoom);
+
+  cameraSelect.addEventListener('change', () => {
+    localStorage.setItem(LS_CAMERA, cameraSelect.value);
+    if (localStream) startLocalStream();
+    sendCameraList(); // CAMERA REMOTE SWITCH MODULE: tell the other side which camera is now active
+  });
+  micSelect.addEventListener('change', () => {
+    localStorage.setItem(LS_MIC, micSelect.value);
+    if (localStream) startLocalStream();
+  });
+
+  // ===== CAMERA NAMING MODULE: JS START =================================
+  // Assigns a persistent custom name (stored in localStorage, keyed by the
+  // browser's internal deviceId — stable across reloads as long as the
+  // camera stays in the same USB port) to whichever camera is selected.
+  // This solves the problem of two identical-model cameras (e.g. two
+  // EMEET PIXYs) reporting the exact same generic label, by letting you
+  // tell them apart yourself instead of relying on the OS-reported name.
+  //
+  // Design goal: only touches dropdown *display text* and a localStorage
+  // map — never touches which camera is actually selected/streamed, so it
+  // can't affect call behavior. To remove: delete this block, the two
+  // "CAMERA NAMING MODULE" lines inside listDevices() above, and the
+  // matching HTML/CSS blocks.
+  const LS_CAMERA_NAMES = 'trainingCall:cameraNames';
+  const nameCameraBtn = document.getElementById('nameCameraBtn');
+  const cameraNamePanel = document.getElementById('cameraNamePanel');
+  const cameraNamePanelLabel = document.getElementById('cameraNamePanelLabel');
+  const cameraNameCustomBtn = document.getElementById('cameraNameCustomBtn');
+  const cameraNameClearBtn = document.getElementById('cameraNameClearBtn');
+  const cameraNameCancelBtn = document.getElementById('cameraNameCancelBtn');
+  let rawCameraLabels = {}; // deviceId -> original OS-reported label, refreshed by listDevices()
+
+  function loadCameraNames() {
+    try { return JSON.parse(localStorage.getItem(LS_CAMERA_NAMES) || '{}'); }
+    catch { return {}; }
+  }
+  function saveCameraNames(map) {
+    localStorage.setItem(LS_CAMERA_NAMES, JSON.stringify(map));
+  }
+  function relabelCameraOptions() {
+    const names = loadCameraNames();
+    [...cameraSelect.options].forEach((opt) => {
+      const raw = rawCameraLabels[opt.value] || opt.textContent;
+      opt.textContent = names[opt.value] ? `${names[opt.value]} (${raw})` : raw;
+    });
+  }
+  function setCameraName(name) {
+    if (!cameraSelect.value) return;
+    const names = loadCameraNames();
+    if (name) names[cameraSelect.value] = name;
+    else delete names[cameraSelect.value];
+    saveCameraNames(names);
+    relabelCameraOptions();
+  }
+  nameCameraBtn.addEventListener('click', () => {
+    const raw = rawCameraLabels[cameraSelect.value] || 'this camera';
+    cameraNamePanelLabel.textContent = `Naming the camera currently selected above (${raw})`;
+    cameraNamePanel.hidden = !cameraNamePanel.hidden;
+  });
+  document.querySelectorAll('.cam-name-preset').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      setCameraName(btn.dataset.name);
+      cameraNamePanel.hidden = true;
+    });
+  });
+  cameraNameCustomBtn.addEventListener('click', () => {
+    const name = prompt('Custom name for this camera:', '');
+    if (name && name.trim()) setCameraName(name.trim().slice(0, 24));
+    cameraNamePanel.hidden = true;
+  });
+  cameraNameClearBtn.addEventListener('click', () => {
+    setCameraName(null);
+    cameraNamePanel.hidden = true;
+  });
+  cameraNameCancelBtn.addEventListener('click', () => {
+    cameraNamePanel.hidden = true;
+  });
+  // ===== CAMERA NAMING MODULE: JS END =====================================
+
+  // ===== CAMERA REMOTE SWITCH MODULE: JS START ============================
+  // Lets either side put buttons on screen for the OTHER side's cameras,
+  // and switch that side's active camera remotely (e.g. Maria taps a
+  // button on her phone, and the gym PC switches which camera it's
+  // sending — no need for whoever's on camera to touch the dropdown).
+  //
+  // How it works: a small WebRTC data channel ("control") rides alongside
+  // the existing video/audio connection. Each side sends its own camera
+  // list (deviceId + friendly label + which one is currently active)
+  // whenever that list changes; each side renders the OTHER side's list
+  // as buttons. Tapping a button sends back a "switch to this deviceId"
+  // request, which the receiving side applies using the exact same
+  // startLocalStream() path the dropdown already uses.
+  //
+  // Design goal: only touches the control channel and the overlay's own
+  // buttons — never reaches into pc's video/audio senders directly, and
+  // never changes what happens when using the dropdown locally. To
+  // remove: delete this block, the "CAMERA REMOTE SWITCH MODULE" hook
+  // lines in createPeerConnection(), teardownPeerConnection(),
+  // listDevices(), and the cameraSelect 'change' handler above, plus the
+  // matching HTML/CSS blocks.
+  const camSwitchOverlay = document.getElementById('camSwitchOverlay');
+
+  function setupControlChannel() {
+    controlChannel.onopen = () => { sendCameraList(); ptzReadActiveTrack(); /* TRAINER PTZ CONTROL MODULE */ };
+    controlChannel.onclose = () => {
+      camSwitchOverlay.hidden = true;
+      camSwitchOverlay.innerHTML = '';
+    };
+    controlChannel.onmessage = (event) => {
+      let msg;
+      try { msg = JSON.parse(event.data); } catch (e) { return; }
+      if (msg.type === 'camera-list') {
+        renderRemoteCameraButtons(msg.cameras || []);
+      } else if (msg.type === 'switch-camera') {
+        const opt = [...cameraSelect.options].find((o) => o.value === msg.deviceId);
+        if (!opt) return; // camera no longer present on this side — ignore
+        cameraSelect.value = msg.deviceId;
+        localStorage.setItem(LS_CAMERA, msg.deviceId);
+        if (localStream) startLocalStream().then(sendCameraList);
+      } else if (msg.type === 'ptz-command') {
+        ptzRequestTarget(msg); // TRAINER PTZ CONTROL MODULE: gym side executes
+      } else if (msg.type === 'ptz-capability' || msg.type === 'ptz-state') {
+        ptzHandlePeerMessage(msg); // TRAINER PTZ CONTROL MODULE: trainer side consumes
+      }
+    };
+  }
+
+  function sendCameraList() {
+    if (!controlChannel || controlChannel.readyState !== 'open') return;
+    const names = loadCameraNames(); // CAMERA NAMING MODULE: custom names, keyed by deviceId
+    const cameras = [...cameraSelect.options].map((opt) => ({
+      deviceId: opt.value,
+      // Prefer the clean custom name (e.g. "GymE-1") over the full dropdown
+      // text, which includes the raw OS-reported label in parentheses —
+      // that extra detail is useful locally but just noise on the other
+      // side's screen.
+      label: names[opt.value] || rawCameraLabels[opt.value] || opt.textContent,
+      active: opt.value === cameraSelect.value
+    }));
+    controlChannel.send(JSON.stringify({ type: 'camera-list', cameras }));
+  }
+
+  function renderRemoteCameraButtons(cameras) {
+    camSwitchOverlay.innerHTML = '';
+    if (cameras.length < 2) {
+      // Nothing to switch to — one camera or none reported.
+      camSwitchOverlay.hidden = true;
+      return;
+    }
+    cameras.forEach((cam) => {
+      const btn = document.createElement('button');
+      btn.textContent = cam.label;
+      if (cam.active) btn.classList.add('cam-switch-active');
+      btn.addEventListener('click', () => {
+        if (controlChannel && controlChannel.readyState === 'open') {
+          controlChannel.send(JSON.stringify({ type: 'switch-camera', deviceId: cam.deviceId }));
+        }
+      });
+      camSwitchOverlay.appendChild(btn);
+    });
+    camSwitchOverlay.hidden = false;
+  }
+  // ===== CAMERA REMOTE SWITCH MODULE: JS END ==============================
+
+  // ===== TRAINER PTZ CONTROL MODULE: JS START ============================
+  // Lets the REMOTE side (the trainer) pan/tilt/zoom the gym camera over the
+  // same 'control' data channel the camera-switch feature already uses — no
+  // second channel, no server change.
+  //
+  // Roles are decided at runtime by capability, exactly like the rest of the
+  // app: the side holding a PTZ-capable camera (the gym) advertises its PTZ
+  // ranges to the peer; the side that RECEIVES that advertisement, and whose
+  // own camera has no PTZ (the trainer), shows the control panel. Nothing is
+  // hard-coded to "gym" or "trainer".
+  //
+  // Protocol (all JSON over controlChannel):
+  //   gym → trainer   { type:'ptz-capability', available, deviceId, ranges, current }
+  //   gym → trainer   { type:'ptz-state', deviceId, current }      // echoed after each move
+  //   trainer → gym   { type:'ptz-command', pan?, tilt?, zoom? }   // absolute targets
+  //
+  // Safety: the gym clamps every incoming target to SOFT limits kept inside
+  // the motor's hard range (so the trainer can never drive the motor onto a
+  // hard stop — the thing that wedged it during bench testing) and throttles
+  // applyConstraints() so rapid taps can't flood the motor controller.
+  //
+  // To remove: delete this block, the matching CSS/HTML blocks, the ptz* hook
+  // lines in startLocalStream() / setupControlChannel() /
+  // teardownPeerConnection() / the control-channel onmessage handler, and the
+  // pan/tilt/zoom:true additions in startLocalStream()'s constraints.
+
+  const PTZ_SOFT_MARGIN = 7200;       // ~2° kept clear of each hard pan/tilt limit
+  const PTZ_APPLY_THROTTLE_MS = 180;  // min gap between motor commands (gym side)
+  const PTZ_LS_PRESETS = 'trainingCall:ptzPresets';
+  const PTZ_STEP = {
+    fine:   { pan: 3600,  tilt: 3600,  zoom: 3 },   // ~1° / 0.03×
+    coarse: { pan: 10800, tilt: 10800, zoom: 8 }    // ~3° / 0.08×
+  };
+
+  // ---- GYM SIDE (the controlled camera) --------------------------------
+  let ptzTrackCaps = null;      // getCapabilities() of the active PTZ track, or null
+  let ptzActiveDeviceId = null;
+  let ptzCurrent = { pan: 0, tilt: 0, zoom: 100 };
+  let ptzPendingTarget = null;  // latest requested target, applied on the throttle tick
+  let ptzApplyTimer = null;
+  let ptzLastApply = 0;
+  let ptzIHavePTZ = false;      // true on the side whose own camera exposes PTZ (the gym)
+
+  function ptzReadActiveTrack() {
+    // Runs after the local stream (re)starts and when the channel opens.
+    // Detects whether the active camera exposes PTZ, records ranges + current
+    // values, then advertises to the peer. On a non-PTZ webcam it advertises
+    // "not available", which keeps the trainer's panel correctly hidden.
+    ptzTrackCaps = null;
+    if (localStream) {
+      const track = localStream.getVideoTracks()[0];
+      if (track && track.getCapabilities) {
+        const caps = track.getCapabilities();
+        const settings = track.getSettings ? track.getSettings() : {};
+        if (('tilt' in caps) || ('pan' in caps) || ('zoom' in caps)) {
+          ptzTrackCaps = caps;
+          ptzActiveDeviceId = cameraSelect.value || settings.deviceId || null;
+          ptzCurrent = {
+            pan:  (typeof settings.pan  === 'number') ? settings.pan  : 0,
+            tilt: (typeof settings.tilt === 'number') ? settings.tilt : 0,
+            zoom: (typeof settings.zoom === 'number') ? settings.zoom : (caps.zoom ? caps.zoom.min : 100)
+          };
+        }
+      }
+    }
+    ptzIHavePTZ = !!ptzTrackCaps;
+    ptzBroadcastCapability();
+    ptzRenderPanel(); // hides the panel on the gym side; harmless on the trainer side
+  }
+
+  function ptzRanges() {
+    if (!ptzTrackCaps) return null;
+    const r = {};
+    ['pan', 'tilt', 'zoom'].forEach((ax) => {
+      if (ptzTrackCaps[ax]) r[ax] = { min: ptzTrackCaps[ax].min, max: ptzTrackCaps[ax].max, step: ptzTrackCaps[ax].step || 1 };
+    });
+    return r;
+  }
+
+  function ptzBroadcastCapability() {
+    if (!controlChannel || controlChannel.readyState !== 'open') return;
+    controlChannel.send(JSON.stringify({
+      type: 'ptz-capability',
+      available: !!ptzTrackCaps,
+      deviceId: ptzActiveDeviceId,
+      ranges: ptzRanges(),
+      current: ptzCurrent
+    }));
+  }
+
+  function ptzBroadcastState() {
+    if (!controlChannel || controlChannel.readyState !== 'open') return;
+    controlChannel.send(JSON.stringify({ type: 'ptz-state', deviceId: ptzActiveDeviceId, current: ptzCurrent }));
+  }
+
+  function ptzClampAxis(ax, val) {
+    if (!ptzTrackCaps || !ptzTrackCaps[ax]) return null;
+    let lo = ptzTrackCaps[ax].min, hi = ptzTrackCaps[ax].max;
+    if (ax === 'pan' || ax === 'tilt') { lo += PTZ_SOFT_MARGIN; hi -= PTZ_SOFT_MARGIN; }
+    return Math.max(lo, Math.min(hi, val));
+  }
+
+  function ptzRequestTarget(target) {
+    // Gym side: accept a target {pan?,tilt?,zoom?}, clamp to soft limits, and
+    // schedule a throttled apply. No-ops on a side without a PTZ camera.
+    if (!ptzTrackCaps) return;
+    const clamped = {};
+    ['pan', 'tilt', 'zoom'].forEach((ax) => {
+      if (typeof target[ax] === 'number') {
+        const c = ptzClampAxis(ax, target[ax]);
+        if (c !== null) clamped[ax] = c;
+      }
+    });
+    if (Object.keys(clamped).length === 0) return;
+    ptzPendingTarget = Object.assign({}, ptzPendingTarget || {}, clamped);
+    ptzScheduleApply();
+  }
+
+  function ptzScheduleApply() {
+    if (ptzApplyTimer || !ptzPendingTarget) return; // a tick is already queued; it takes the latest target
+    const wait = Math.max(0, PTZ_APPLY_THROTTLE_MS - (performance.now() - ptzLastApply));
+    ptzApplyTimer = setTimeout(async () => {
+      ptzApplyTimer = null;
+      const target = ptzPendingTarget; ptzPendingTarget = null;
+      if (!target || !localStream) return;
+      const track = localStream.getVideoTracks()[0];
+      if (!track) return;
+      const advanced = {};
+      ['pan', 'tilt', 'zoom'].forEach((ax) => { if (typeof target[ax] === 'number') advanced[ax] = target[ax]; });
+      try {
+        await track.applyConstraints({ advanced: [advanced] });
+        const s = track.getSettings ? track.getSettings() : {};
+        ['pan', 'tilt', 'zoom'].forEach((ax) => {
+          if (typeof s[ax] === 'number') ptzCurrent[ax] = s[ax];
+          else if (typeof advanced[ax] === 'number') ptzCurrent[ax] = advanced[ax];
+        });
+      } catch (e) {
+        // A rejected constraint must never break the call; just report last-known.
+      }
+      ptzLastApply = performance.now();
+      ptzBroadcastState();
+      if (ptzPendingTarget) ptzScheduleApply(); // more arrived while applying
+    }, wait);
+  }
+
+  // ---- TRAINER SIDE (the controller UI) --------------------------------
+  const ptzPanel = document.getElementById('ptzPanel');
+  const ptzReadout = document.getElementById('ptzReadout');
+  const ptzSaveRow = document.getElementById('ptzSaveRow');
+  const ptzInvTilt = document.getElementById('ptzInvTilt');
+  const ptzInvPan = document.getElementById('ptzInvPan');
+  const ptzStepFineBtn = document.getElementById('ptzStepFine');
+  const ptzStepCoarseBtn = document.getElementById('ptzStepCoarse');
+  const ptzCollapseBtn = document.getElementById('ptzCollapse');
+
+  let ptzRemote = { available: false, deviceId: null, ranges: null, current: { pan: 0, tilt: 0, zoom: 100 } };
+  let ptzTarget = { pan: 0, tilt: 0, zoom: 100 };
+  let ptzLastNudgeAt = 0;
+  let ptzStep = 'fine';
+
+  function ptzHandlePeerMessage(msg) {
+    if (msg.type === 'ptz-capability') {
+      ptzRemote = {
+        available: !!msg.available,
+        deviceId: msg.deviceId || null,
+        ranges: msg.ranges || null,
+        current: msg.current || { pan: 0, tilt: 0, zoom: 100 }
+      };
+      ptzTarget = Object.assign({}, ptzRemote.current);
+      ptzRenderPanel();
+    } else if (msg.type === 'ptz-state') {
+      if (msg.deviceId) ptzRemote.deviceId = msg.deviceId;
+      ptzRemote.current = msg.current || ptzRemote.current;
+      // Don't fight the trainer's own recent taps: only resync the target from
+      // the echoed position once things have settled for a moment.
+      if (performance.now() - ptzLastNudgeAt > 500) ptzTarget = Object.assign({}, ptzRemote.current);
+      ptzUpdateReadout();
+    }
+  }
+
+  const ptzDeg = (v) => (v / 3600).toFixed(0);   // UVC units → whole degrees
+  const ptzZoomX = (v) => (v / 100).toFixed(2);  // 100 → 1.00×
+
+  function ptzUpdateReadout() {
+    if (!ptzReadout) return;
+    const c = ptzRemote.current || {};
+    const parts = [];
+    if (typeof c.tilt === 'number') parts.push('tilt ' + ptzDeg(c.tilt) + '°');
+    if (typeof c.pan === 'number') parts.push('pan ' + ptzDeg(c.pan) + '°');
+    if (typeof c.zoom === 'number') parts.push('zoom ' + ptzZoomX(c.zoom) + '×');
+    ptzReadout.textContent = parts.join('   ');
+  }
+
+  function ptzRenderPanel() {
+    if (!ptzPanel) return;
+    const show = ptzRemote.available && !ptzIHavePTZ;
+    ptzPanel.hidden = !show;
+    if (!show) return;
+    ptzUpdateReadout();
+    const slots = ptzGetSlots();
+    document.querySelectorAll('.ptz-preset').forEach((b) => {
+      b.classList.toggle('saved', !!slots[b.dataset.slot]);
+    });
+  }
+
+  function ptzClampTarget(ax, val) {
+    const r = ptzRemote.ranges && ptzRemote.ranges[ax];
+    if (!r) return val;
+    return Math.max(r.min, Math.min(r.max, val));
+  }
+
+  function ptzSendCommand() {
+    if (!controlChannel || controlChannel.readyState !== 'open') return;
+    const out = { type: 'ptz-command' };
+    ['pan', 'tilt', 'zoom'].forEach((ax) => {
+      if (ptzRemote.ranges && ptzRemote.ranges[ax] && typeof ptzTarget[ax] === 'number') out[ax] = ptzTarget[ax];
+    });
+    controlChannel.send(JSON.stringify(out));
+  }
+
+  function ptzNudge(ax, dir) {
+    if (!ptzRemote.available || !ptzRemote.ranges || !ptzRemote.ranges[ax]) return;
+    ptzTarget[ax] = ptzClampTarget(ax, (ptzTarget[ax] || 0) + PTZ_STEP[ptzStep][ax] * dir);
+    ptzLastNudgeAt = performance.now();
+    ptzSendCommand();
+  }
+
+  function ptzGoto(pos) {
+    if (!ptzRemote.available) return;
+    ['pan', 'tilt', 'zoom'].forEach((ax) => { if (typeof pos[ax] === 'number') ptzTarget[ax] = ptzClampTarget(ax, pos[ax]); });
+    ptzLastNudgeAt = performance.now();
+    ptzSendCommand();
+  }
+
+  function ptzCenter() {
+    const z = (ptzRemote.ranges && ptzRemote.ranges.zoom) ? ptzRemote.ranges.zoom.min : 100;
+    ptzGoto({ pan: 0, tilt: 0, zoom: z });
+  }
+
+  // Presets are physical positions, so they're keyed per gym-camera deviceId —
+  // switching between GymE-1 and GymE-2 loads that camera's own saved spots.
+  function ptzLoadPresets() { try { return JSON.parse(localStorage.getItem(PTZ_LS_PRESETS) || '{}'); } catch { return {}; } }
+  function ptzGetSlots() { return ptzLoadPresets()[ptzRemote.deviceId || 'default'] || {}; }
+  function ptzSaveSlot(slot) {
+    const all = ptzLoadPresets();
+    const key = ptzRemote.deviceId || 'default';
+    all[key] = all[key] || {};
+    all[key][slot] = Object.assign({}, ptzRemote.current); // capture where the camera actually is now
+    localStorage.setItem(PTZ_LS_PRESETS, JSON.stringify(all));
+    ptzRenderPanel();
+  }
+  function ptzRecallSlot(slot) {
+    const pos = ptzGetSlots()[slot];
+    if (pos) ptzGoto(pos);
+  }
+
+  // Wire the controls once (the buttons exist from page load; actions no-op
+  // until a PTZ capability actually arrives).
+  (function ptzWire() {
+    const on = (id, fn) => { const el = document.getElementById(id); if (el) el.addEventListener('click', fn); };
+    on('ptzTiltUp',   () => ptzNudge('tilt', (ptzInvTilt && ptzInvTilt.checked) ? -1 : +1));
+    on('ptzTiltDown', () => ptzNudge('tilt', (ptzInvTilt && ptzInvTilt.checked) ? +1 : -1));
+    on('ptzPanLeft',  () => ptzNudge('pan',  (ptzInvPan && ptzInvPan.checked) ? +1 : -1));
+    on('ptzPanRight', () => ptzNudge('pan',  (ptzInvPan && ptzInvPan.checked) ? -1 : +1));
+    on('ptzZoomIn',   () => ptzNudge('zoom', +1));
+    on('ptzZoomOut',  () => ptzNudge('zoom', -1));
+    on('ptzCenterBtn', ptzCenter);
+    on('ptzStepFine',   () => { ptzStep = 'fine';   ptzStepFineBtn.classList.add('on');  ptzStepCoarseBtn.classList.remove('on'); });
+    on('ptzStepCoarse', () => { ptzStep = 'coarse'; ptzStepCoarseBtn.classList.add('on'); ptzStepFineBtn.classList.remove('on'); });
+    on('ptzSaveToggle', () => { if (ptzSaveRow) ptzSaveRow.hidden = !ptzSaveRow.hidden; });
+    on('ptzCollapse', () => {
+      ptzPanel.classList.toggle('collapsed');
+      ptzCollapseBtn.textContent = ptzPanel.classList.contains('collapsed') ? '+' : '–';
+    });
+    document.querySelectorAll('.ptz-preset').forEach((b) => b.addEventListener('click', () => ptzRecallSlot(b.dataset.slot)));
+    document.querySelectorAll('.ptz-save').forEach((b) => b.addEventListener('click', () => ptzSaveSlot(b.dataset.slot)));
+  })();
+  // ===== TRAINER PTZ CONTROL MODULE: JS END ==============================
+
+  // ===== DIAGNOSTICS MODULE START =====================================
+  // Adds: (1) a live connection-stats feed + per-session history log,
+  // written to localStorage only — never shown on this page; (2) an
+  // automatic bitrate cap that backs off when the call is routed through
+  // the TURN relay; (3) a manual "Low Bandwidth" toggle.
+  //
+  // Design goals: never touch the call's own variables or functions
+  // (pc, localStream, startLocalStream, createPeerConnection, etc.) —
+  // this block only *observes* them — so a bug here can't break calling,
+  // and the whole module can be deleted by removing this block plus the
+  // matching CSS/HTML blocks marked above, plus deleting public/diagnostics.html.
+  // Reports are viewed separately, on /diagnostics.html — nothing here
+  // changes what either side sees on the call screen itself.
+  const DIAG_LS_LIVE = 'trainingCall:diag:liveStats';
+  const DIAG_LS_LOG = 'trainingCall:diag:sessionLog';
+  const DIAG_LS_LOWBW = 'trainingCall:diag:lowBandwidth';
+  const DIAG_MAX_LOG_ENTRIES = 50;
+  const DIAG_POLL_MS = 3000;
+  const DIAG_BITRATE_FULL = 2500000;  // ~2.5 Mbps cap, matches the 1080p target
+  const DIAG_BITRATE_RELAY = 900000;  // auto cap when routed via TURN relay
+  const DIAG_BITRATE_LOW = 350000;    // manual "Low Bandwidth" cap
+
+  const bandwidthBtn = document.getElementById('bandwidthBtn');
+
+  let lowBandwidthMode = localStorage.getItem(DIAG_LS_LOWBW) === '1';
+  let diagLastPc = null;
+  let diagPollTimer = null;
+  let diagSessionStart = null;
+  let diagBitrateSamples = [];
+  let diagReconnectCount = 0;
+  let diagCandidateType = null;
+  let diagPrevBytes = { sent: 0, received: 0, audioSent: 0, audioReceived: 0, time: 0 };
+
+  function diagSetButtonLabel() {
+    if (!bandwidthBtn) return;
+    bandwidthBtn.textContent = 'Low Bandwidth: ' + (lowBandwidthMode ? 'On' : 'Off');
+    bandwidthBtn.classList.toggle('active-off', lowBandwidthMode);
+  }
+  diagSetButtonLabel();
+
+  async function diagApplyBitrateCap(kbpsCap) {
+    if (!pc) return;
+    try {
+      const sender = pc.getSenders().find((s) => s.track && s.track.kind === 'video');
+      if (!sender) return;
+      const params = sender.getParameters();
+      if (!params.encodings || !params.encodings.length) params.encodings = [{}];
+      params.encodings[0].maxBitrate = kbpsCap;
+      await sender.setParameters(params);
+    } catch (e) { /* never let a diagnostics failure affect the call */ }
+  }
+
+  async function diagApplyBandwidthMode() {
+    if (lowBandwidthMode) {
+      await diagApplyBitrateCap(DIAG_BITRATE_LOW);
+      const track = localStream && localStream.getVideoTracks()[0];
+      if (track) {
+        try {
+          await track.applyConstraints({ width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 20 } });
+        } catch (e) {}
+      }
+    } else {
+      // Hand back to the automatic cap (full quality, or relay-reduced —
+      // diagPollStats will reassert the right one on its next tick).
+      await diagApplyBitrateCap(DIAG_BITRATE_FULL);
+      const track = localStream && localStream.getVideoTracks()[0];
+      if (track) {
+        try {
+          await track.applyConstraints({ width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } });
+        } catch (e) {}
+      }
+    }
+  }
+
+  if (bandwidthBtn) {
+    bandwidthBtn.addEventListener('click', () => {
+      lowBandwidthMode = !lowBandwidthMode;
+      localStorage.setItem(DIAG_LS_LOWBW, lowBandwidthMode ? '1' : '0');
+      diagSetButtonLabel();
+      diagApplyBandwidthMode();
+    });
+  }
+
+  function diagFinalizeSession() {
+    if (!diagSessionStart || diagBitrateSamples.length === 0) {
+      diagSessionStart = null;
+      diagBitrateSamples = [];
+      diagReconnectCount = 0;
+      diagCandidateType = null;
+      localStorage.removeItem(DIAG_LS_LIVE);
+      return;
+    }
+    const endedAt = Date.now();
+    const avgUp = Math.round(diagBitrateSamples.reduce((a, s) => a + s.up, 0) / diagBitrateSamples.length);
+    const avgDown = Math.round(diagBitrateSamples.reduce((a, s) => a + s.down, 0) / diagBitrateSamples.length);
+    const audioUpSamples = diagBitrateSamples.filter((s) => s.audioUp != null);
+    const audioDownSamples = diagBitrateSamples.filter((s) => s.audioDown != null);
+    const avgAudioUp = audioUpSamples.length ? Math.round(audioUpSamples.reduce((a, s) => a + s.audioUp, 0) / audioUpSamples.length) : null;
+    const avgAudioDown = audioDownSamples.length ? Math.round(audioDownSamples.reduce((a, s) => a + s.audioDown, 0) / audioDownSamples.length) : null;
+    // Loss is a cumulative running total, so the last sample already reflects the whole session.
+    const lossSamples = diagBitrateSamples.filter((s) => s.audioLossPct != null);
+    const finalAudioLossPct = lossSamples.length ? lossSamples[lossSamples.length - 1].audioLossPct : null;
+    const entry = {
+      startedAt: diagSessionStart,
+      endedAt,
+      durationSec: Math.round((endedAt - diagSessionStart) / 1000),
+      avgBitrateUpKbps: avgUp,
+      avgBitrateDownKbps: avgDown,
+      avgAudioBitrateUpKbps: avgAudioUp,
+      avgAudioBitrateDownKbps: avgAudioDown,
+      audioPacketLossPct: finalAudioLossPct,
+      reconnectCount: diagReconnectCount,
+      candidateType: diagCandidateType,
+      bandwidthMode: lowBandwidthMode ? 'low' : 'auto'
+    };
+    try {
+      const log = JSON.parse(localStorage.getItem(DIAG_LS_LOG) || '[]');
+      log.push(entry);
+      while (log.length > DIAG_MAX_LOG_ENTRIES) log.shift();
+      localStorage.setItem(DIAG_LS_LOG, JSON.stringify(log));
+    } catch (e) {}
+    diagSessionStart = null;
+    diagBitrateSamples = [];
+    diagReconnectCount = 0;
+    diagCandidateType = null;
+    localStorage.removeItem(DIAG_LS_LIVE);
+  }
+
+  async function diagPollStats(pcRef) {
+    if (!pcRef) return;
+    try {
+      const stats = await pcRef.getStats();
+      let bytesSent = null, bytesReceived = null, pairLocalCandId = null;
+      let audioBytesSent = null, audioBytesReceived = null, audioPacketsLost = null, audioPacketsReceived = null;
+      stats.forEach((report) => {
+        if (report.type === 'outbound-rtp' && report.kind === 'video') bytesSent = report.bytesSent;
+        if (report.type === 'inbound-rtp' && report.kind === 'video') bytesReceived = report.bytesReceived;
+        if (report.type === 'outbound-rtp' && report.kind === 'audio') audioBytesSent = report.bytesSent;
+        if (report.type === 'inbound-rtp' && report.kind === 'audio') {
+          audioBytesReceived = report.bytesReceived;
+          audioPacketsLost = report.packetsLost;
+          audioPacketsReceived = report.packetsReceived;
+        }
+        if (report.type === 'candidate-pair' && report.state === 'succeeded' && (report.nominated || report.selected)) {
+          pairLocalCandId = report.localCandidateId;
+        }
+      });
+      let candidateType = diagCandidateType;
+      if (pairLocalCandId) {
+        const localCand = stats.get(pairLocalCandId);
+        if (localCand && localCand.candidateType) candidateType = localCand.candidateType; // host/srflx/relay/prflx
+      }
+
+      const now = performance.now();
+      let kbpsUp = null, kbpsDown = null, audioKbpsUp = null, audioKbpsDown = null;
+      const dt = diagPrevBytes.time ? (now - diagPrevBytes.time) / 1000 : 0;
+      if (dt > 0 && bytesSent != null) kbpsUp = Math.max(0, Math.round(((bytesSent - diagPrevBytes.sent) * 8) / dt / 1000));
+      if (dt > 0 && bytesReceived != null) kbpsDown = Math.max(0, Math.round(((bytesReceived - diagPrevBytes.received) * 8) / dt / 1000));
+      if (dt > 0 && audioBytesSent != null) audioKbpsUp = Math.max(0, Math.round(((audioBytesSent - diagPrevBytes.audioSent) * 8) / dt / 1000));
+      if (dt > 0 && audioBytesReceived != null) audioKbpsDown = Math.max(0, Math.round(((audioBytesReceived - diagPrevBytes.audioReceived) * 8) / dt / 1000));
+      const audioLossPct = (audioPacketsLost != null && audioPacketsReceived != null && (audioPacketsLost + audioPacketsReceived) > 0)
+        ? Math.round((audioPacketsLost / (audioPacketsLost + audioPacketsReceived)) * 1000) / 10
+        : null;
+      diagPrevBytes = {
+        sent: bytesSent || 0, received: bytesReceived || 0,
+        audioSent: audioBytesSent || 0, audioReceived: audioBytesReceived || 0,
+        time: now
+      };
+
+      if (kbpsUp != null && kbpsDown != null) {
+        diagBitrateSamples.push({ up: kbpsUp, down: kbpsDown, audioUp: audioKbpsUp, audioDown: audioKbpsDown, audioLossPct });
+        if (diagBitrateSamples.length > 400) diagBitrateSamples.shift();
+      }
+
+      if (candidateType && candidateType !== diagCandidateType) {
+        diagCandidateType = candidateType;
+        if (!lowBandwidthMode) {
+          diagApplyBitrateCap(candidateType === 'relay' ? DIAG_BITRATE_RELAY : DIAG_BITRATE_FULL);
+        }
+      }
+
+      const vSender = pcRef.getSenders().find((s) => s.track && s.track.kind === 'video');
+      const vReceiver = pcRef.getReceivers().find((r) => r.track && r.track.kind === 'video');
+      const sentSettings = (vSender && vSender.track) ? vSender.track.getSettings() : {};
+      const recvSettings = (vReceiver && vReceiver.track) ? vReceiver.track.getSettings() : {};
+
+      localStorage.setItem(DIAG_LS_LIVE, JSON.stringify({
+        timestamp: Date.now(),
+        connectionState: pcRef.connectionState,
+        candidateType: diagCandidateType,
+        bitrateUpKbps: kbpsUp,
+        bitrateDownKbps: kbpsDown,
+        audioBitrateUpKbps: audioKbpsUp,
+        audioBitrateDownKbps: audioKbpsDown,
+        audioPacketLossPct: audioLossPct,
+        resolutionSent: sentSettings.width ? (sentSettings.width + 'x' + sentSettings.height) : null,
+        resolutionReceived: recvSettings.width ? (recvSettings.width + 'x' + recvSettings.height) : null,
+        reconnectCount: diagReconnectCount,
+        bandwidthMode: lowBandwidthMode ? 'low' : 'auto'
+      }));
+    } catch (e) { /* never let a diagnostics failure affect the call */ }
+  }
+
+  function diagAttachToPc(pcRef) {
+    if (!diagSessionStart) diagSessionStart = Date.now();
+    diagPrevBytes = { sent: 0, received: 0, time: performance.now() };
+    if (lowBandwidthMode) diagApplyBandwidthMode();
+    const diagHandleStateChange = () => {
+      if (pcRef.connectionState === 'disconnected' || pcRef.connectionState === 'failed') {
+        diagReconnectCount++;
+      }
+      if (pcRef.connectionState === 'connected' && !diagPollTimer) {
+        diagPollTimer = setInterval(() => diagPollStats(pcRef), DIAG_POLL_MS);
+      }
+    };
+    pcRef.addEventListener('connectionstatechange', diagHandleStateChange);
+    // Covers the case where the call already reached "connected" in the
+    // moment between pc being created and this watcher noticing it (the
+    // watcher only checks once per second) — without this, a fast-connecting
+    // call (e.g. two tabs on the same network) could skip logging entirely.
+    diagHandleStateChange();
+  }
+
+  // Rather than touch createPeerConnection()/teardownPeerConnection(), this
+  // just watches the existing `pc` variable from the outside and reacts
+  // when it appears or disappears.
+  setInterval(() => {
+    if (pc && pc !== diagLastPc) {
+      diagLastPc = pc;
+      diagAttachToPc(pc);
+    } else if (!pc && diagLastPc) {
+      diagLastPc = null;
+      if (diagPollTimer) { clearInterval(diagPollTimer); diagPollTimer = null; }
+      diagFinalizeSession();
+    }
+  }, 1000);
+  // ===== DIAGNOSTICS MODULE END =======================================
+
+  // ===== SELF-VIEW POPOUT MODULE ========================================
+  // Opens your own camera feed in a separate browser window so you can see
+  // yourself the way Maria does — large, and unmirrored (the small preview
+  // on video#local is flipped via CSS for comfort, but the real feed sent
+  // over WebRTC, and the one shown in this popped-out window, is not; the
+  // popout has no stylesheet of its own so no flip is ever applied).
+  //
+  // Opens as a plain window near the main screen; drag/resize it onto the
+  // second monitor manually. No automatic screen-placement logic — kept
+  // deliberately simple.
+  //
+  // Delete this whole block plus the matching HTML block in the footer to
+  // remove the feature entirely; nothing else in the app depends on it.
+  const popoutBtn = document.getElementById('popoutBtn');
+  let popoutWindow = null;
+  let popoutVideoEl = null;
+
+  function popoutUpdateStream() {
+    if (!popoutVideoEl) return;
+    try { popoutVideoEl.srcObject = localStream; } catch (e) {}
+  }
+
+  async function openSelfViewPopout() {
+    if (popoutWindow && !popoutWindow.closed) {
+      popoutWindow.focus();
+      return;
+    }
+
+    // Opens as a normal window near the main screen — no automatic
+    // screen-placement logic. Drag/resize it onto the other monitor
+    // manually; the browser will usually remember its size and position
+    // for next time.
+    popoutWindow = window.open('', 'selfViewPopout', 'width=800,height=600');
+    if (!popoutWindow) return; // popup blocked; nothing more we can do here
+
+    const doc = popoutWindow.document;
+    doc.title = 'My View';
+    const style = doc.createElement('style');
+    style.textContent = 'html,body{margin:0;padding:0;height:100%;background:#000;}' +
+      'video{width:100%;height:100%;object-fit:contain;background:#000;display:block;}';
+    doc.head.appendChild(style);
+    const video = doc.createElement('video');
+    video.id = 'popoutVideo';
+    video.autoplay = true;
+    video.playsInline = true;
+    video.muted = true;
+    doc.body.appendChild(video);
+
+    popoutVideoEl = video;
+    popoutUpdateStream();
+  }
+
+  if (popoutBtn) {
+    popoutBtn.addEventListener('click', () => { openSelfViewPopout(); });
+  }
+  // ===== SELF-VIEW POPOUT MODULE END =====================================
+
+  init();
+})();
+</script>
+</body>
+</html>

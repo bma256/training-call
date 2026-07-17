@@ -1366,6 +1366,71 @@
     document.querySelectorAll('.ptz-preset').forEach((b) => b.addEventListener('click', () => ptzRecallSlot(b.dataset.slot)));
     document.querySelectorAll('.ptz-save').forEach((b) => b.addEventListener('click', () => ptzSaveSlot(b.dataset.slot)));
   })();
+
+  // NEXT VERSION (noted, not yet done): make Invert tilt / Invert pan
+  // per-camera, keyed to the active gym deviceId like presets already are, so
+  // GymE-1 and GymE-2 each remember their own direction instead of sharing one
+  // checkbox. The two ceiling cameras face opposite ways and may want opposite
+  // invert settings. When doing this, keep the button wiring above and the
+  // ptzKeyActions map below pointing at the same invert logic so arrows and the
+  // D-pad never disagree.
+
+  // ---- keyboard control (desktop trainer convenience) ------------------
+  // Arrow keys mirror the D-pad, +/- mirror zoom. They fire the exact same
+  // nudge path as the buttons — so they honour the Invert checkboxes and the
+  // Fine/Coarse step automatically — and only act while the trainer panel is
+  // actually showing, so they do nothing on the gym side. Holding a key runs
+  // a paced repeat (we ignore the OS's own key-repeat and run our own, capped
+  // so it can't outrun the gym-side motor throttle). Multiple keys can be held
+  // at once (e.g. Up+Right) for diagonal framing.
+  const PTZ_KEY_REPEAT_MS = 200;
+  const ptzKeyActions = {
+    tiltUp:   () => ptzNudge('tilt', (ptzInvTilt && ptzInvTilt.checked) ? -1 : +1),
+    tiltDown: () => ptzNudge('tilt', (ptzInvTilt && ptzInvTilt.checked) ? +1 : -1),
+    panLeft:  () => ptzNudge('pan',  (ptzInvPan && ptzInvPan.checked) ? +1 : -1),
+    panRight: () => ptzNudge('pan',  (ptzInvPan && ptzInvPan.checked) ? -1 : +1),
+    zoomIn:   () => ptzNudge('zoom', +1),
+    zoomOut:  () => ptzNudge('zoom', -1)
+  };
+  const ptzKeyIntervals = {};
+
+  function ptzKeyToAction(e) {
+    switch (e.key) {
+      case 'ArrowUp': return 'tiltUp';
+      case 'ArrowDown': return 'tiltDown';
+      case 'ArrowLeft': return 'panLeft';
+      case 'ArrowRight': return 'panRight';
+      case '+': case '=': return 'zoomIn';
+      case '-': case '_': return 'zoomOut';
+      default: return null;
+    }
+  }
+
+  function ptzStopAllKeys() {
+    Object.keys(ptzKeyIntervals).forEach((a) => { clearInterval(ptzKeyIntervals[a]); delete ptzKeyIntervals[a]; });
+  }
+
+  document.addEventListener('keydown', (e) => {
+    if (!ptzPanel || ptzPanel.hidden) return;          // not the trainer side / no panel
+    if (e.ctrlKey || e.altKey || e.metaKey) return;    // leave browser/OS shortcuts alone
+    const ae = document.activeElement;
+    if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.tagName === 'SELECT' || ae.isContentEditable)) return;
+    const action = ptzKeyToAction(e);
+    if (!action) return;
+    e.preventDefault();          // stop arrow-scroll / browser zoom
+    if (e.repeat) return;        // ignore the OS auto-repeat; our interval paces it
+    if (ptzKeyIntervals[action]) return;
+    ptzKeyActions[action]();     // one immediate step on press
+    ptzKeyIntervals[action] = setInterval(ptzKeyActions[action], PTZ_KEY_REPEAT_MS);
+  });
+
+  document.addEventListener('keyup', (e) => {
+    const action = ptzKeyToAction(e);
+    if (action && ptzKeyIntervals[action]) { clearInterval(ptzKeyIntervals[action]); delete ptzKeyIntervals[action]; }
+  });
+
+  // If the window loses focus mid-hold, keyup may never arrive — stop everything.
+  window.addEventListener('blur', ptzStopAllKeys);
   // ===== TRAINER PTZ CONTROL MODULE: JS END ==============================
 
   // ===== DIAGNOSTICS MODULE START =====================================

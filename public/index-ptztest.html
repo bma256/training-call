@@ -25,7 +25,12 @@
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     overscroll-behavior: none;
   }
-  body { display: flex; flex-direction: column; height: 100vh; }
+  /* iOS Safari: 100vh is the viewport WITHOUT the browser toolbars, so the
+     body ends up taller than the visible area — the page scrolls, the
+     top-center camera-switch bar slides out of view, and tapping a control
+     near the bottom strands you there. 100dvh accounts for the toolbars.
+     The 100vh line stays first as the fallback for older engines. */
+  body { display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
 
   header {
     display: flex; align-items: center; justify-content: space-between;

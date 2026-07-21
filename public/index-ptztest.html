@@ -368,6 +368,16 @@
     <button id="popoutBtn" title="Open your camera feed in a separate window you can drag to a second monitor">Pop Out My View</button>
   </div>
   <!-- ===== SELF-VIEW POPOUT MODULE: controls END ===== -->
+
+  <!-- ===== TRAINER PTZ CONTROL MODULE: debug line START =====
+       Test-page only. Shows, on each device, what PTZ this side's own camera
+       exposes and what the peer advertised — so we can see at a glance whether
+       the gym is advertising PTZ and whether the trainer received it. Delete
+       this block plus the ptzUpdateDebug() function/calls to remove. -->
+  <div class="controls-row subtle-row">
+    <span id="ptzDebug" style="font-size:11px; color:var(--muted); text-align:center;">PTZ: —</span>
+  </div>
+  <!-- ===== TRAINER PTZ CONTROL MODULE: debug line END ===== -->
 </footer>
 
 <script>
@@ -1243,6 +1253,17 @@
   const ptzStepFineBtn = document.getElementById('ptzStepFine');
   const ptzStepCoarseBtn = document.getElementById('ptzStepCoarse');
   const ptzCollapseBtn = document.getElementById('ptzCollapse');
+  const ptzDebugEl = document.getElementById('ptzDebug');
+
+  function ptzUpdateDebug() {
+    if (!ptzDebugEl) return;
+    const selfAxes = ptzTrackCaps ? ['pan', 'tilt', 'zoom'].filter((a) => a in ptzTrackCaps) : [];
+    const self = selfAxes.length ? selfAxes.join('/') : 'none';
+    const peerAxes = (ptzRemote.available && ptzRemote.ranges) ? Object.keys(ptzRemote.ranges).join('/') : '';
+    const peer = ptzRemote.available ? ('yes ' + peerAxes).trim() : 'no';
+    const panel = (ptzRemote.available && !ptzIHavePTZ) ? 'SHOWN' : 'hidden';
+    ptzDebugEl.textContent = `PTZ self: ${self}  |  peer: ${peer}  |  panel: ${panel}`;
+  }
 
   let ptzRemote = { available: false, deviceId: null, ranges: null, current: { pan: 0, tilt: 0, zoom: 100 } };
   let ptzTarget = { pan: 0, tilt: 0, zoom: 100 };
@@ -1284,6 +1305,7 @@
 
   function ptzRenderPanel() {
     if (!ptzPanel) return;
+    ptzUpdateDebug(); // TRAINER PTZ CONTROL MODULE: keep the debug line current on every state change
     const show = ptzRemote.available && !ptzIHavePTZ;
     ptzPanel.hidden = !show;
     if (!show) return;

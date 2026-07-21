@@ -18,7 +18,15 @@
     --danger: #e0556f;
     --warn: #e3b341;
   }
-  * { box-sizing: border-box; }
+  /* v7: the double-tap-zoom guard is page-wide, not button-only.
+     v6 scoped touch-action to the `button` rule, which worked — the PTZ
+     panel stopped zooming the page — but every tap landing anywhere else
+     (header, panel background, gaps between controls, the letterboxed
+     margins around the video) still fired iOS double-tap page zoom.
+     `manipulation` disables ONLY the double-tap gesture; scrolling and
+     pinch-to-zoom still work normally. video#remote keeps its stricter
+     `touch-action: none` further down — an id selector outranks `*`. */
+  * { box-sizing: border-box; touch-action: manipulation; }
   html, body {
     margin: 0; padding: 0; height: 100%;
     background: var(--bg); color: var(--text);

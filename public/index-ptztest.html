@@ -1142,6 +1142,12 @@
   let ptzLastApply = 0;
   let ptzIHavePTZ = false;      // true on the side whose own camera exposes PTZ (the gym)
 
+  function ptzHasMotors(caps) {
+    // Motorized = can be physically aimed. Zoom-only devices (iOS Safari
+    // reports zoom on the front/back camera) are NOT motorized.
+    return !!caps && (('pan' in caps) || ('tilt' in caps));
+  }
+
   function ptzReadActiveTrack() {
     // Runs after the local stream (re)starts and when the channel opens.
     // Detects whether the active camera exposes PTZ, records ranges + current
@@ -1164,7 +1170,11 @@
         }
       }
     }
-    ptzIHavePTZ = !!ptzTrackCaps;
+    // A camera counts as "mine to be aimed" only if it has MOTORS (pan or
+    // tilt). Zoom alone does NOT count: iOS Safari exposes a zoom capability
+    // on the trainer's iPad/iPhone, and treating that as PTZ made the trainer
+    // side flag itself as the gym and suppress its own control panel.
+    ptzIHavePTZ = ptzHasMotors(ptzTrackCaps);
     ptzBroadcastCapability();
     ptzRenderPanel(); // hides the panel on the gym side; harmless on the trainer side
   }
@@ -1182,7 +1192,7 @@
     if (!controlChannel || controlChannel.readyState !== 'open') return;
     controlChannel.send(JSON.stringify({
       type: 'ptz-capability',
-      available: !!ptzTrackCaps,
+      available: ptzHasMotors(ptzTrackCaps),  // zoom-only cameras are not remotely aimable
       deviceId: ptzActiveDeviceId,
       ranges: ptzRanges(),
       current: ptzCurrent

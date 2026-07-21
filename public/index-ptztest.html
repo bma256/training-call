@@ -138,6 +138,11 @@
     border: 1px solid var(--line); background: var(--bg); color: var(--text);
     border-radius: 10px; padding: 10px 16px; font-size: 14px; font-weight: 500;
     cursor: pointer;
+    /* iOS Safari ignores user-scalable=no, so repeated taps on the PTZ D-pad
+       trigger double-tap-to-zoom on the PAGE. touch-action: manipulation
+       tells Safari this element has no double-tap gesture, which also
+       removes the ~300ms tap delay. */
+    touch-action: manipulation;
   }
   button:hover { border-color: var(--accent); }
   button.active-off { background: rgba(224,85,111,0.15); border-color: var(--danger); color: var(--danger); }

@@ -1,0 +1,1842 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<title>Training Call — Auto-Frame</title>
+<style>
+  :root {
+    --bg: #0b0d10;
+    --panel: #14171c;
+    --line: #232830;
+    --text: #e8eaed;
+    --muted: #8b93a1;
+    --accent: #4fd1c5;
+    --danger: #e0556f;
+    --warn: #e3b341;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    overscroll-behavior: none;
+  }
+  body { display: flex; flex-direction: column; height: 100vh; }
+
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 18px;
+    padding-top: calc(14px + env(safe-area-inset-top));
+    padding-left: calc(18px + env(safe-area-inset-left));
+    padding-right: calc(18px + env(safe-area-inset-right));
+    border-bottom: 1px solid var(--line);
+    flex-shrink: 0;
+    transition: max-height 0.35s ease, opacity 0.25s ease, padding 0.35s ease;
+    max-height: 200px;
+    overflow: hidden;
+  }
+  .title { font-size: 15px; font-weight: 600; letter-spacing: 0.2px; }
+  .status {
+    font-size: 13px; color: var(--muted);
+    display: flex; align-items: center; gap: 6px;
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex-shrink: 0; }
+  .dot.live { background: var(--accent); animation: pulse 2s infinite; }
+  .dot.warn { background: var(--warn); }
+  .dot.bad { background: var(--danger); }
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(79,209,197,0.5); }
+    70% { box-shadow: 0 0 0 6px rgba(79,209,197,0); }
+    100% { box-shadow: 0 0 0 0 rgba(79,209,197,0); }
+  }
+
+  main {
+    position: relative;
+    flex: 1;
+    background: #000;
+    overflow: hidden;
+    min-height: 0;
+  }
+  video#remote {
+    width: 100%; height: 100%; object-fit: contain; background: #000;
+    touch-action: none;
+    transform-origin: center center;
+  }
+  video#local {
+    position: absolute;
+    width: 19%;
+    max-width: 150px;
+    min-width: 84px;
+    right: calc(14px + env(safe-area-inset-right));
+    bottom: calc(14px + env(safe-area-inset-bottom));
+    border-radius: 10px;
+    border: 1px solid var(--line);
+    background: #000;
+    transform: scaleX(-1);
+    transition: width 0.2s ease, height 0.2s ease, opacity 0.2s ease, border-radius 0.2s ease;
+    cursor: pointer;
+  }
+  /* Tapping the self-preview shrinks it to a small, mostly-out-of-the-way
+     circle — useful when it's sitting on top of something the trainer
+     needs to see. Tap again to restore. */
+  video#local.minimized {
+    width: 44px !important;
+    max-width: 44px !important;
+    min-width: 44px !important;
+    height: 44px !important;
+    border-radius: 50%;
+    opacity: 0.6;
+    object-fit: cover;
+  }
+  .placeholder {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 10px; color: var(--muted); text-align: center; padding: 0 24px;
+  }
+  .placeholder .big { font-size: 16px; color: var(--text); }
+  .placeholder .small { font-size: 13px; max-width: 320px; }
+
+  footer {
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
+    padding: 14px 16px calc(14px + env(safe-area-inset-bottom));
+    padding-left: calc(16px + env(safe-area-inset-left));
+    padding-right: calc(16px + env(safe-area-inset-right));
+    border-top: 1px solid var(--line);
+    flex-shrink: 0;
+    background: var(--panel);
+    transition: max-height 0.35s ease, opacity 0.25s ease, padding 0.35s ease;
+    max-height: 340px;
+    overflow: hidden;
+  }
+
+  /* Fullscreen auto-hide: header/footer collapse away after a few seconds of
+     inactivity so the video fills the screen, and fade back in on any
+     mouse move, tap, or keypress. */
+  body.chrome-hidden header,
+  body.chrome-hidden footer {
+    max-height: 0;
+    opacity: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+    border-color: transparent;
+  }
+  select {
+    background: var(--bg); color: var(--text);
+    border: 1px solid var(--line); border-radius: 8px;
+    padding: 8px 10px; font-size: 13px; max-width: 170px;
+  }
+  button {
+    border: 1px solid var(--line); background: var(--bg); color: var(--text);
+    border-radius: 10px; padding: 10px 16px; font-size: 14px; font-weight: 500;
+    cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); }
+  button.active-off { background: rgba(224,85,111,0.15); border-color: var(--danger); color: var(--danger); }
+  button.primary { background: var(--accent); color: #06201d; border-color: var(--accent); }
+  button.primary.end { background: var(--danger); border-color: var(--danger); color: #fff; }
+  button:disabled { opacity: 0.4; cursor: default; }
+
+  .controls-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; justify-content: center; }
+
+  @media (max-width: 520px) {
+    select { max-width: 130px; font-size: 12px; }
+    button { padding: 9px 12px; font-size: 13px; }
+  }
+
+  /* ===== DIAGNOSTICS MODULE: CSS START =====
+     Everything between these markers can be deleted as a block to fully
+     remove the low-bandwidth toggle's styling. It does not affect any
+     other rule above it. */
+  .subtle-row { opacity: 0.65; }
+  .subtle-row button {
+    padding: 6px 12px; font-size: 12px; border-radius: 8px;
+  }
+  /* ===== DIAGNOSTICS MODULE: CSS END ===== */
+
+  /* ===== CAMERA NAMING MODULE: CSS START =====
+     Styling for the "Name Camera" panel. Delete this block (and the
+     matching HTML / JS blocks) to remove the feature entirely. */
+  #cameraNamePanel { flex-wrap: wrap; }
+  #cameraNamePanel[hidden] { display: none; } /* without this, .controls-row's display:flex wins the tie and the panel never actually hides */
+  .cam-name-label { font-size: 11px; color: var(--muted); width: 100%; text-align: center; }
+  /* ===== CAMERA NAMING MODULE: CSS END ===== */
+
+  /* ===== CAMERA REMOTE SWITCH MODULE: CSS START =====
+     A small floating bar over the top of the remote video, showing one
+     button per camera the OTHER side has available, so either person can
+     ask the other side to switch cameras without touching their own
+     dropdown. Delete this block (and the matching HTML/JS blocks) to
+     remove the feature entirely. */
+  #camSwitchOverlay {
+    position: absolute;
+    top: calc(10px + env(safe-area-inset-top));
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 5;
+    display: flex;
+    gap: 8px;
+    max-width: calc(100% - 24px);
+    overflow-x: auto;
+    background: rgba(20,23,28,0.78);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 6px;
+  }
+  #camSwitchOverlay[hidden] { display: none; }
+  #camSwitchOverlay button {
+    padding: 7px 12px; font-size: 12px; border-radius: 8px; white-space: nowrap; flex-shrink: 0;
+  }
+  #camSwitchOverlay button.cam-switch-active {
+    border-color: var(--accent); color: var(--accent);
+  }
+  /* ===== CAMERA REMOTE SWITCH MODULE: CSS END ===== */
+</style>
+</head>
+<body>
+
+<header>
+  <div class="title">Training Call</div>
+  <div class="status"><span class="dot" id="statusDot"></span><span id="statusText">Not connected</span></div>
+</header>
+
+<main>
+  <video id="remote" autoplay playsinline></video>
+  <div class="placeholder" id="placeholder">
+    <div class="big">Connecting…</div>
+    <div class="small" id="placeholderSub">This starts automatically. Send this same link to the other side — whoever opens it second connects the call.</div>
+  </div>
+  <video id="local" autoplay playsinline muted></video>
+  <!-- ===== CAMERA REMOTE SWITCH MODULE: overlay START =====
+       Populated at runtime with one button per camera the other side
+       reports having. Hidden whenever the other side has fewer than 2
+       cameras (nothing useful to switch to). -->
+  <div id="camSwitchOverlay" hidden></div>
+  <!-- ===== CAMERA REMOTE SWITCH MODULE: overlay END ===== -->
+</main>
+
+<footer>
+  <div class="controls-row">
+    <select id="cameraSelect" title="Camera"></select>
+    <select id="micSelect" title="Microphone"></select>
+  </div>
+  <div class="controls-row">
+    <button id="muteBtn">Mute</button>
+    <button id="camBtn">Camera off</button>
+    <button id="fullscreenBtn">Fullscreen</button>
+    <button id="callBtn" class="primary">Start Call</button>
+  </div>
+  <!-- ===== DIAGNOSTICS MODULE: bandwidth toggle button START =====
+       Delete this whole <div> to remove the low-bandwidth control from
+       the page. No other markup depends on it. -->
+  <div class="controls-row subtle-row">
+    <button id="bandwidthBtn" title="Lower outgoing video quality to save bandwidth">Low Bandwidth: Off</button>
+  </div>
+  <!-- ===== DIAGNOSTICS MODULE: bandwidth toggle button END ===== -->
+
+  <!-- ===== CAMERA NAMING MODULE: controls START =====
+       Lets you assign a persistent custom name (e.g. "GymE-1") to whichever
+       camera is currently selected in the dropdown above — useful when two
+       cameras are the same model and the browser shows the same generic
+       label for both. Delete this whole block (both <div> rows) plus the
+       matching CSS and JS blocks to remove the feature; nothing else
+       depends on it. -->
+  <div class="controls-row subtle-row">
+    <button id="nameCameraBtn" title="Give the currently selected camera a custom name">Name Camera</button>
+  </div>
+  <div class="controls-row subtle-row" id="cameraNamePanel" hidden>
+    <span class="cam-name-label" id="cameraNamePanelLabel"></span>
+    <button class="cam-name-preset" data-name="GymE-1">GymE-1</button>
+    <button class="cam-name-preset" data-name="GymE-2">GymE-2</button>
+    <button id="cameraNameCustomBtn">Custom…</button>
+    <button id="cameraNameClearBtn">Clear name</button>
+    <button id="cameraNameCancelBtn">Cancel</button>
+  </div>
+  <!-- ===== CAMERA NAMING MODULE: controls END ===== -->
+
+  <!-- ===== SELF-VIEW POPOUT MODULE: controls START =====
+       Opens your own camera feed in a plain separate window near the main
+       screen — drag/resize it onto a second monitor manually. Shows the
+       UNMIRRORED feed: the small preview above is flipped via CSS for
+       comfort, but this window (like the feed Maria actually receives) is
+       not. Delete this whole <div> plus the matching JS block near the end
+       of the script to remove the feature; nothing else depends on it. -->
+  <div class="controls-row subtle-row">
+    <button id="popoutBtn" title="Open your camera feed in a separate window you can drag to a second monitor">Pop Out My View</button>
+  </div>
+  <!-- ===== SELF-VIEW POPOUT MODULE: controls END ===== -->
+</footer>
+
+<script>
+(() => {
+  const remoteVideo = document.getElementById('remote');
+  const localVideo = document.getElementById('local');
+  const cameraSelect = document.getElementById('cameraSelect');
+  const micSelect = document.getElementById('micSelect');
+  const muteBtn = document.getElementById('muteBtn');
+  const camBtn = document.getElementById('camBtn');
+  const fullscreenBtn = document.getElementById('fullscreenBtn');
+  const callBtn = document.getElementById('callBtn');
+  const statusDot = document.getElementById('statusDot');
+  const statusText = document.getElementById('statusText');
+  const placeholder = document.getElementById('placeholder');
+  const placeholderSub = document.getElementById('placeholderSub');
+
+  const LS_CAMERA = 'trainingCall:cameraId';
+  const LS_MIC = 'trainingCall:micId';
+  const LS_HAS_CONNECTED = 'trainingCall:hasConnectedBefore';
+
+  const params = new URLSearchParams(location.search);
+  const room = params.get('room') || 'autoframe';
+
+  // Google's public STUN servers — free, no signup, fine for most home networks.
+  // ICE tries these (and any direct path) first; they're enough for wifi-to-wifi calls.
+  //
+  // TURN fallback (Metered.ca free tier, 20GB/month) — only used if a direct/STUN
+  // path can't be found (e.g. restrictive cellular networks). Credentials below are
+  // tied to our free account quota, not a security secret — TURN creds are meant to
+  // ship to the client, that's how the protocol works. If the call connects fine
+  // without it (most sessions will), these entries simply go unused.
+  const ICE_SERVERS = [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun.relay.metered.ca:80' },
+    {
+      urls: 'turn:standard.relay.metered.ca:80',
+      username: '3781fe1f6d857864a846de77',
+      credential: 'epirZplvHuT7vJb1'
+    },
+    {
+      urls: 'turn:standard.relay.metered.ca:80?transport=tcp',
+      username: '3781fe1f6d857864a846de77',
+      credential: 'epirZplvHuT7vJb1'
+    },
+    {
+      urls: 'turn:standard.relay.metered.ca:443',
+      username: '3781fe1f6d857864a846de77',
+      credential: 'epirZplvHuT7vJb1'
+    },
+    {
+      urls: 'turns:standard.relay.metered.ca:443?transport=tcp',
+      username: '3781fe1f6d857864a846de77',
+      credential: 'epirZplvHuT7vJb1'
+    }
+  ];
+
+  let localStream = null;
+  let pc = null;
+  let ws = null;
+  let inCall = false;
+  let pendingCandidates = [];
+  let amCaller = false; // only the caller initiates ICE restarts, to avoid both sides colliding
+  let controlChannel = null; // CAMERA REMOTE SWITCH MODULE: data channel for cross-side camera control
+  let disconnectTimer = null;
+  let iceRestartAttempts = 0;
+  const MAX_ICE_RESTARTS = 4;
+
+  // Pinch-to-zoom / double-tap-to-zoom on the remote video specifically.
+  // This is deliberately implemented as our own CSS transform on the video
+  // element rather than relying on the browser's page-level zoom (which we
+  // disabled in the viewport meta tag, since native page zoom on a live
+  // video stream caused freezes/disconnects). Scoping it to just this
+  // element keeps the rest of the page (and the connection) untouched.
+  let remoteZoom = 1;
+  let remotePanX = 0;
+  let remotePanY = 0;
+  let pinchStartDist = 0;
+  let pinchStartZoom = 1;
+  let lastTapTime = 0;
+  let lastTapX = 0;
+  let lastTapY = 0;
+  let panActive = false;
+  let panStartX = 0;
+  let panStartY = 0;
+  let panOriginX = 0;
+  let panOriginY = 0;
+  const MAX_REMOTE_ZOOM = 4;
+  const DOUBLE_TAP_ZOOM = 2.5;
+
+  function setStatus(text, mode) {
+    statusText.textContent = text;
+    statusDot.className = 'dot' + (mode ? ' ' + mode : '');
+  }
+
+  function setPlaceholder(big, small, show) {
+    placeholder.style.display = show ? 'flex' : 'none';
+    if (big !== null) placeholder.querySelector('.big').textContent = big;
+    if (small !== undefined && small !== null) placeholderSub.textContent = small;
+  }
+
+  async function listDevices() {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const prevCam = cameraSelect.value || localStorage.getItem(LS_CAMERA);
+    const prevMic = micSelect.value || localStorage.getItem(LS_MIC);
+    cameraSelect.innerHTML = '';
+    micSelect.innerHTML = '';
+    let camCount = 0, micCount = 0;
+    devices.forEach((d) => {
+      if (d.kind === 'videoinput') {
+        camCount++;
+        const opt = document.createElement('option');
+        opt.value = d.deviceId;
+        opt.textContent = d.label || `Camera ${camCount}`;
+        rawCameraLabels[d.deviceId] = opt.textContent; // CAMERA NAMING MODULE
+        cameraSelect.appendChild(opt);
+      } else if (d.kind === 'audioinput') {
+        micCount++;
+        const opt = document.createElement('option');
+        opt.value = d.deviceId;
+        opt.textContent = d.label || `Microphone ${micCount}`;
+        micSelect.appendChild(opt);
+      }
+    });
+    if (prevCam && [...cameraSelect.options].some((o) => o.value === prevCam)) cameraSelect.value = prevCam;
+    if (prevMic && [...micSelect.options].some((o) => o.value === prevMic)) micSelect.value = prevMic;
+    relabelCameraOptions(); // CAMERA NAMING MODULE: apply any saved custom camera names
+    sendCameraList(); // CAMERA REMOTE SWITCH MODULE: let the other side know our current camera options
+  }
+
+  async function startLocalStream() {
+    const videoId = cameraSelect.value || undefined;
+    const audioId = micSelect.value || undefined;
+    // AUTO-FRAME EDIT: pan/tilt/zoom:true asks for the PTZ capability so the
+    // active track exposes motor control to applyConstraints(). This is what
+    // triggers Chromium's SECOND permission prompt (camera-control), which is
+    // invisible in --app= mode — launch this page in a normal window.
+    const ptz = { pan: true, tilt: true, zoom: true };
+    const baseVideo = { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } };
+    const videoBase = videoId ? Object.assign({ deviceId: { exact: videoId } }, baseVideo) : Object.assign({}, baseVideo);
+    const constraints = {
+      video: Object.assign({}, videoBase, ptz),
+      audio: audioId ? { deviceId: { exact: audioId } } : true
+    };
+
+    // If the PTZ request is refused outright, fall back to a plain stream so the
+    // CALL still happens. Auto-framing is the feature; the call is the point.
+    let newStream;
+    try {
+      newStream = await navigator.mediaDevices.getUserMedia(constraints);
+    } catch (ptzErr) {
+      newStream = await navigator.mediaDevices.getUserMedia({
+        video: videoBase,
+        audio: audioId ? { deviceId: { exact: audioId } } : true
+      });
+    }
+
+    if (localStream) {
+      localStream.getTracks().forEach((t) => t.stop());
+    }
+    localStream = newStream;
+    localVideo.srcObject = localStream;
+    popoutUpdateStream(); // SELF-VIEW POPOUT MODULE: keep the popped-out window's feed in sync with camera switches
+
+    if (pc) {
+      const videoTrack = localStream.getVideoTracks()[0];
+      const audioTrack = localStream.getAudioTracks()[0];
+      const senders = pc.getSenders();
+      const vSender = senders.find((s) => s.track && s.track.kind === 'video');
+      const aSender = senders.find((s) => s.track && s.track.kind === 'audio');
+      if (vSender && videoTrack) vSender.replaceTrack(videoTrack);
+      if (aSender && audioTrack) aSender.replaceTrack(audioTrack);
+    }
+  }
+
+  async function init() {
+    try {
+      // Request permission once with defaults so device labels become visible,
+      // then list devices properly.
+      const tempStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      tempStream.getTracks().forEach((t) => t.stop());
+      await listDevices();
+      navigator.mediaDevices.ondevicechange = listDevices;
+      // Opening the page is meant to be the only step on repeat visits — but
+      // on the very first visit from a given browser, skip the auto-start so
+      // there's a calm window (with Safari's normal toolbar still visible)
+      // to set up "Add to Home Screen" before the page takes over the screen.
+      if (localStorage.getItem(LS_HAS_CONNECTED)) {
+        startCallFlow();
+      } else {
+        setPlaceholder('Ready when you are', 'First time here: feel free to set up "Add to Home Screen" now, then tap Start Call. After this, it\'ll connect automatically every time.', true);
+      }
+    } catch (err) {
+      setPlaceholder('Camera or microphone blocked', 'Allow camera and microphone access for this page in your browser settings, then reload.', true);
+      setStatus('Permission needed', 'bad');
+    }
+  }
+
+  function wsUrl() {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${proto}//${location.host}?room=${encodeURIComponent(room)}`;
+  }
+
+  function connectSignaling() {
+    ws = new WebSocket(wsUrl());
+
+    ws.onopen = () => {
+      setStatus('Waiting for the other side to join…', 'warn');
+    };
+
+    ws.onmessage = async (event) => {
+      const msg = JSON.parse(event.data);
+
+      if (msg.type === 'joined') {
+        if (msg.peers === 2) {
+          amCaller = true;
+          await createPeerConnection();
+          await makeOffer();
+        }
+      } else if (msg.type === 'peer-joined') {
+        setStatus('Other side joined — connecting…', 'warn');
+        if (!pc) await createPeerConnection();
+      } else if (msg.type === 'offer') {
+        if (!pc) await createPeerConnection();
+        await pc.setRemoteDescription(new RTCSessionDescription(msg));
+        await flushPendingCandidates();
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        send({ type: 'answer', sdp: answer.sdp });
+      } else if (msg.type === 'answer') {
+        await pc.setRemoteDescription(new RTCSessionDescription(msg));
+        await flushPendingCandidates();
+      } else if (msg.type === 'candidate') {
+        if (pc && pc.remoteDescription) {
+          try { await pc.addIceCandidate(new RTCIceCandidate(msg.candidate)); } catch (e) {}
+        } else {
+          pendingCandidates.push(msg.candidate);
+        }
+      } else if (msg.type === 'peer-left') {
+        setStatus('Other side disconnected', 'warn');
+        setPlaceholder('Call ended', 'The other side left. Tap Start Call to begin a new session.', true);
+        teardownPeerConnection();
+      } else if (msg.type === 'full') {
+        setStatus('Room already has two people', 'bad');
+        setPlaceholder('Call already in progress', 'This link is already connected on two devices.', true);
+      }
+    };
+
+    ws.onclose = () => {
+      if (inCall) {
+        setStatus('Signaling lost — retrying…', 'bad');
+        setTimeout(() => { if (inCall) connectSignaling(); }, 2000);
+      }
+    };
+
+    ws.onerror = () => {
+      setStatus('Connection error', 'bad');
+    };
+  }
+
+  function send(msg) {
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
+  }
+
+  async function flushPendingCandidates() {
+    for (const c of pendingCandidates) {
+      try { await pc.addIceCandidate(new RTCIceCandidate(c)); } catch (e) {}
+    }
+    pendingCandidates = [];
+  }
+
+  async function createPeerConnection() {
+    pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+
+    localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
+
+    // ===== CAMERA REMOTE SWITCH MODULE: open/receive the control channel =====
+    // Whichever side makes the offer also opens the data channel; the other
+    // side receives it via ondatachannel. Either way, setupControlChannel()
+    // wires up the same send/receive logic once it's ready.
+    if (amCaller) {
+      controlChannel = pc.createDataChannel('control');
+      setupControlChannel();
+    }
+    pc.ondatachannel = (event) => {
+      if (event.channel.label === 'control') {
+        controlChannel = event.channel;
+        setupControlChannel();
+      }
+    };
+    // ===== CAMERA REMOTE SWITCH MODULE END =====
+
+    pc.onicecandidate = (event) => {
+      if (event.candidate) send({ type: 'candidate', candidate: event.candidate });
+    };
+
+    pc.ontrack = (event) => {
+      remoteVideo.srcObject = event.streams[0];
+      setPlaceholder(null, null, false);
+    };
+
+    pc.onconnectionstatechange = () => {
+      if (!pc) return;
+      if (pc.connectionState === 'connected') {
+        setStatus('Connected', 'live');
+        setPlaceholder(null, null, false);
+        clearTimeout(disconnectTimer);
+        iceRestartAttempts = 0; // reset once the connection is stably back
+        localStorage.setItem(LS_HAS_CONNECTED, 'true');
+      } else if (pc.connectionState === 'disconnected') {
+        // 'disconnected' often self-heals within a few seconds (a brief
+        // Wi-Fi blip, a tab losing focus momentarily, etc.) — give it a
+        // short grace period before trying anything ourselves.
+        setStatus('Connection wobbling — recovering…', 'warn');
+        clearTimeout(disconnectTimer);
+        disconnectTimer = setTimeout(attemptIceRestart, 4000);
+      } else if (pc.connectionState === 'failed') {
+        setStatus('Connection lost — reconnecting…', 'bad');
+        clearTimeout(disconnectTimer);
+        attemptIceRestart();
+      } else if (pc.connectionState === 'connecting') {
+        setStatus('Connecting…', 'warn');
+      }
+    };
+  }
+
+  async function attemptIceRestart() {
+    if (!pc || !amCaller) return; // only the caller renegotiates, to avoid both sides colliding
+    if (pc.connectionState === 'connected') return; // already recovered on its own
+    if (iceRestartAttempts >= MAX_ICE_RESTARTS) {
+      setStatus('Connection lost', 'bad');
+      setPlaceholder('Connection lost', 'Tap End Call, then Start Call again to reconnect.', true);
+      return;
+    }
+    iceRestartAttempts++;
+    try {
+      const offer = await pc.createOffer({ iceRestart: true });
+      await pc.setLocalDescription(offer);
+      send({ type: 'offer', sdp: offer.sdp });
+    } catch (e) {
+      // If this attempt fails to even start, the next state-change event
+      // (or the timer above) will trigger another try, up to the cap.
+    }
+  }
+
+  async function makeOffer() {
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    send({ type: 'offer', sdp: offer.sdp });
+  }
+
+  function teardownPeerConnection() {
+    if (pc) { pc.close(); pc = null; }
+    remoteVideo.srcObject = null;
+    pendingCandidates = [];
+    clearTimeout(disconnectTimer);
+    amCaller = false;
+    iceRestartAttempts = 0;
+    resetRemoteZoom();
+    // CAMERA REMOTE SWITCH MODULE: the channel dies with the old pc, and any
+    // buttons we were showing described a connection that no longer exists.
+    controlChannel = null;
+    camSwitchOverlay.hidden = true;
+    camSwitchOverlay.innerHTML = '';
+  }
+
+  async function startCallFlow() {
+    if (inCall) return;
+    inCall = true;
+    callBtn.textContent = 'End Call';
+    callBtn.classList.add('end');
+    setPlaceholder('Connecting…', 'Waiting for the other side to join…', true);
+    try {
+      if (!localStream) await startLocalStream();
+      connectSignaling();
+    } catch (err) {
+      setStatus('Could not access camera/mic', 'bad');
+      inCall = false;
+      callBtn.textContent = 'Start Call';
+      callBtn.classList.remove('end');
+    }
+  }
+
+  function endCallFlow() {
+    inCall = false;
+    callBtn.textContent = 'Start Call';
+    callBtn.classList.remove('end');
+    teardownPeerConnection();
+    if (ws) { ws.close(); ws = null; }
+    setStatus('Not connected', '');
+    setPlaceholder('Call ended', 'Tap Start Call to begin a new session.', true);
+  }
+
+  callBtn.addEventListener('click', () => {
+    if (!inCall) startCallFlow(); else endCallFlow();
+  });
+
+  // --- Fullscreen + auto-hiding controls -----------------------------------
+  // Goal: while in fullscreen, the header and footer fade away after a few
+  // seconds so the video fills the whole screen, then reappear the moment
+  // the mouse moves, the screen is tapped, or a key is pressed.
+  let hideTimer = null;
+
+  function revealChrome() {
+    document.body.classList.remove('chrome-hidden');
+    clearTimeout(hideTimer);
+    if (document.fullscreenElement) {
+      hideTimer = setTimeout(() => {
+        document.body.classList.add('chrome-hidden');
+      }, 3000);
+    }
+  }
+
+  document.addEventListener('mousemove', revealChrome);
+  document.addEventListener('touchstart', revealChrome);
+  document.addEventListener('keydown', revealChrome);
+
+  document.addEventListener('fullscreenchange', () => {
+    if (document.fullscreenElement) {
+      fullscreenBtn.textContent = 'Exit Fullscreen';
+      revealChrome();
+    } else {
+      fullscreenBtn.textContent = 'Fullscreen';
+      clearTimeout(hideTimer);
+      document.body.classList.remove('chrome-hidden');
+    }
+  });
+
+  fullscreenBtn.addEventListener('click', () => {
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen().catch(() => {});
+    } else {
+      document.exitFullscreen();
+    }
+  });
+
+  // iOS (iPhone/iPad) doesn't reliably support page-level fullscreen — on
+  // some iOS versions the API reports itself as "available" but actually
+  // calling it on a page like this one freezes the video. Rather than trust
+  // that self-reported support, detect iOS directly and hide the button
+  // there unconditionally. The real fullscreen equivalent on iOS is opening
+  // this page from a Home Screen icon (Share → Add to Home Screen), which
+  // hides Safari's own chrome automatically and works reliably.
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1); // iPadOS often reports as Mac
+  const supportsPageFullscreen = !isIOS && document.fullscreenEnabled &&
+    typeof document.documentElement.requestFullscreen === 'function';
+  if (!supportsPageFullscreen) {
+    fullscreenBtn.style.display = 'none';
+  }
+
+  muteBtn.addEventListener('click', () => {
+    if (!localStream) return;
+    const track = localStream.getAudioTracks()[0];
+    if (!track) return;
+    track.enabled = !track.enabled;
+    muteBtn.textContent = track.enabled ? 'Mute' : 'Unmute';
+    muteBtn.classList.toggle('active-off', !track.enabled);
+  });
+
+  camBtn.addEventListener('click', () => {
+    if (!localStream) return;
+    const track = localStream.getVideoTracks()[0];
+    if (!track) return;
+    track.enabled = !track.enabled;
+    camBtn.textContent = track.enabled ? 'Camera on' : 'Camera off';
+    camBtn.classList.toggle('active-off', !track.enabled);
+  });
+
+  localVideo.addEventListener('click', () => {
+    localVideo.classList.toggle('minimized');
+  });
+
+  function applyRemoteTransform() {
+    remoteVideo.style.transform = `translate(${remotePanX}px, ${remotePanY}px) scale(${remoteZoom})`;
+  }
+
+  function clampRemotePan() {
+    const maxOffset = (remoteZoom - 1) * 250;
+    remotePanX = Math.max(-maxOffset, Math.min(maxOffset, remotePanX));
+    remotePanY = Math.max(-maxOffset, Math.min(maxOffset, remotePanY));
+  }
+
+  function resetRemoteZoom() {
+    remoteZoom = 1;
+    remotePanX = 0;
+    remotePanY = 0;
+    applyRemoteTransform();
+  }
+
+  remoteVideo.addEventListener('touchstart', (e) => {
+    if (e.touches.length === 2) {
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      pinchStartDist = Math.hypot(dx, dy);
+      pinchStartZoom = remoteZoom;
+      panActive = false;
+    } else if (e.touches.length === 1) {
+      const t = e.touches[0];
+      const now = Date.now();
+      const movedSinceLastTap = Math.hypot(t.clientX - lastTapX, t.clientY - lastTapY);
+
+      if (now - lastTapTime < 350 && movedSinceLastTap < 40) {
+        // Double tap: toggle between normal and a fixed zoomed-in level.
+        remoteZoom = remoteZoom > 1 ? 1 : DOUBLE_TAP_ZOOM;
+        remotePanX = 0;
+        remotePanY = 0;
+        applyRemoteTransform();
+        lastTapTime = 0;
+      } else {
+        lastTapTime = now;
+        lastTapX = t.clientX;
+        lastTapY = t.clientY;
+      }
+
+      if (remoteZoom > 1) {
+        panActive = true;
+        panStartX = t.clientX;
+        panStartY = t.clientY;
+        panOriginX = remotePanX;
+        panOriginY = remotePanY;
+      }
+    }
+  }, { passive: true });
+
+  remoteVideo.addEventListener('touchmove', (e) => {
+    if (e.touches.length === 2 && pinchStartDist > 0) {
+      e.preventDefault();
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      const dist = Math.hypot(dx, dy);
+      remoteZoom = Math.min(MAX_REMOTE_ZOOM, Math.max(1, pinchStartZoom * (dist / pinchStartDist)));
+      clampRemotePan();
+      applyRemoteTransform();
+    } else if (e.touches.length === 1 && panActive && remoteZoom > 1) {
+      e.preventDefault();
+      const t = e.touches[0];
+      remotePanX = panOriginX + (t.clientX - panStartX);
+      remotePanY = panOriginY + (t.clientY - panStartY);
+      clampRemotePan();
+      applyRemoteTransform();
+    }
+  }, { passive: false });
+
+  remoteVideo.addEventListener('touchend', () => {
+    panActive = false;
+    pinchStartDist = 0;
+    if (remoteZoom < 1.05) resetRemoteZoom();
+  }, { passive: true });
+
+  // Also support double-click on desktop for the same zoom toggle.
+  remoteVideo.addEventListener('dblclick', () => {
+    remoteZoom = remoteZoom > 1 ? 1 : DOUBLE_TAP_ZOOM;
+    remotePanX = 0;
+    remotePanY = 0;
+    applyRemoteTransform();
+  });
+
+  window.addEventListener('orientationchange', resetRemoteZoom);
+
+  cameraSelect.addEventListener('change', () => {
+    localStorage.setItem(LS_CAMERA, cameraSelect.value);
+    if (localStream) startLocalStream();
+    sendCameraList(); // CAMERA REMOTE SWITCH MODULE: tell the other side which camera is now active
+  });
+  micSelect.addEventListener('change', () => {
+    localStorage.setItem(LS_MIC, micSelect.value);
+    if (localStream) startLocalStream();
+  });
+
+  // ===== CAMERA NAMING MODULE: JS START =================================
+  // Assigns a persistent custom name (stored in localStorage, keyed by the
+  // browser's internal deviceId — stable across reloads as long as the
+  // camera stays in the same USB port) to whichever camera is selected.
+  // This solves the problem of two identical-model cameras (e.g. two
+  // EMEET PIXYs) reporting the exact same generic label, by letting you
+  // tell them apart yourself instead of relying on the OS-reported name.
+  //
+  // Design goal: only touches dropdown *display text* and a localStorage
+  // map — never touches which camera is actually selected/streamed, so it
+  // can't affect call behavior. To remove: delete this block, the two
+  // "CAMERA NAMING MODULE" lines inside listDevices() above, and the
+  // matching HTML/CSS blocks.
+  const LS_CAMERA_NAMES = 'trainingCall:cameraNames';
+  const nameCameraBtn = document.getElementById('nameCameraBtn');
+  const cameraNamePanel = document.getElementById('cameraNamePanel');
+  const cameraNamePanelLabel = document.getElementById('cameraNamePanelLabel');
+  const cameraNameCustomBtn = document.getElementById('cameraNameCustomBtn');
+  const cameraNameClearBtn = document.getElementById('cameraNameClearBtn');
+  const cameraNameCancelBtn = document.getElementById('cameraNameCancelBtn');
+  let rawCameraLabels = {}; // deviceId -> original OS-reported label, refreshed by listDevices()
+
+  function loadCameraNames() {
+    try { return JSON.parse(localStorage.getItem(LS_CAMERA_NAMES) || '{}'); }
+    catch { return {}; }
+  }
+  function saveCameraNames(map) {
+    localStorage.setItem(LS_CAMERA_NAMES, JSON.stringify(map));
+  }
+  function relabelCameraOptions() {
+    const names = loadCameraNames();
+    [...cameraSelect.options].forEach((opt) => {
+      const raw = rawCameraLabels[opt.value] || opt.textContent;
+      opt.textContent = names[opt.value] ? `${names[opt.value]} (${raw})` : raw;
+    });
+  }
+  function setCameraName(name) {
+    if (!cameraSelect.value) return;
+    const names = loadCameraNames();
+    if (name) names[cameraSelect.value] = name;
+    else delete names[cameraSelect.value];
+    saveCameraNames(names);
+    relabelCameraOptions();
+  }
+  nameCameraBtn.addEventListener('click', () => {
+    const raw = rawCameraLabels[cameraSelect.value] || 'this camera';
+    cameraNamePanelLabel.textContent = `Naming the camera currently selected above (${raw})`;
+    cameraNamePanel.hidden = !cameraNamePanel.hidden;
+  });
+  document.querySelectorAll('.cam-name-preset').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      setCameraName(btn.dataset.name);
+      cameraNamePanel.hidden = true;
+    });
+  });
+  cameraNameCustomBtn.addEventListener('click', () => {
+    const name = prompt('Custom name for this camera:', '');
+    if (name && name.trim()) setCameraName(name.trim().slice(0, 24));
+    cameraNamePanel.hidden = true;
+  });
+  cameraNameClearBtn.addEventListener('click', () => {
+    setCameraName(null);
+    cameraNamePanel.hidden = true;
+  });
+  cameraNameCancelBtn.addEventListener('click', () => {
+    cameraNamePanel.hidden = true;
+  });
+  // ===== CAMERA NAMING MODULE: JS END =====================================
+
+  // ===== CAMERA REMOTE SWITCH MODULE: JS START ============================
+  // Lets either side put buttons on screen for the OTHER side's cameras,
+  // and switch that side's active camera remotely (e.g. Maria taps a
+  // button on her phone, and the gym PC switches which camera it's
+  // sending — no need for whoever's on camera to touch the dropdown).
+  //
+  // How it works: a small WebRTC data channel ("control") rides alongside
+  // the existing video/audio connection. Each side sends its own camera
+  // list (deviceId + friendly label + which one is currently active)
+  // whenever that list changes; each side renders the OTHER side's list
+  // as buttons. Tapping a button sends back a "switch to this deviceId"
+  // request, which the receiving side applies using the exact same
+  // startLocalStream() path the dropdown already uses.
+  //
+  // Design goal: only touches the control channel and the overlay's own
+  // buttons — never reaches into pc's video/audio senders directly, and
+  // never changes what happens when using the dropdown locally. To
+  // remove: delete this block, the "CAMERA REMOTE SWITCH MODULE" hook
+  // lines in createPeerConnection(), teardownPeerConnection(),
+  // listDevices(), and the cameraSelect 'change' handler above, plus the
+  // matching HTML/CSS blocks.
+  const camSwitchOverlay = document.getElementById('camSwitchOverlay');
+
+  function setupControlChannel() {
+    controlChannel.onopen = () => sendCameraList();
+    controlChannel.onclose = () => {
+      camSwitchOverlay.hidden = true;
+      camSwitchOverlay.innerHTML = '';
+    };
+    controlChannel.onmessage = (event) => {
+      let msg;
+      try { msg = JSON.parse(event.data); } catch (e) { return; }
+      if (msg.type === 'camera-list') {
+        renderRemoteCameraButtons(msg.cameras || []);
+      } else if (msg.type === 'switch-camera') {
+        const opt = [...cameraSelect.options].find((o) => o.value === msg.deviceId);
+        if (!opt) return; // camera no longer present on this side — ignore
+        cameraSelect.value = msg.deviceId;
+        localStorage.setItem(LS_CAMERA, msg.deviceId);
+        if (localStream) startLocalStream().then(sendCameraList);
+      }
+    };
+  }
+
+  function sendCameraList() {
+    if (!controlChannel || controlChannel.readyState !== 'open') return;
+    const names = loadCameraNames(); // CAMERA NAMING MODULE: custom names, keyed by deviceId
+    const cameras = [...cameraSelect.options].map((opt) => ({
+      deviceId: opt.value,
+      // Prefer the clean custom name (e.g. "GymE-1") over the full dropdown
+      // text, which includes the raw OS-reported label in parentheses —
+      // that extra detail is useful locally but just noise on the other
+      // side's screen.
+      label: names[opt.value] || rawCameraLabels[opt.value] || opt.textContent,
+      active: opt.value === cameraSelect.value
+    }));
+    controlChannel.send(JSON.stringify({ type: 'camera-list', cameras }));
+  }
+
+  function renderRemoteCameraButtons(cameras) {
+    camSwitchOverlay.innerHTML = '';
+    if (cameras.length < 2) {
+      // Nothing to switch to — one camera or none reported.
+      camSwitchOverlay.hidden = true;
+      return;
+    }
+    cameras.forEach((cam) => {
+      const btn = document.createElement('button');
+      btn.textContent = cam.label;
+      if (cam.active) btn.classList.add('cam-switch-active');
+      btn.addEventListener('click', () => {
+        if (controlChannel && controlChannel.readyState === 'open') {
+          controlChannel.send(JSON.stringify({ type: 'switch-camera', deviceId: cam.deviceId }));
+        }
+      });
+      camSwitchOverlay.appendChild(btn);
+    });
+    camSwitchOverlay.hidden = false;
+  }
+  // ===== CAMERA REMOTE SWITCH MODULE: JS END ==============================
+
+  // ===== DIAGNOSTICS MODULE START =====================================
+  // Adds: (1) a live connection-stats feed + per-session history log,
+  // written to localStorage only — never shown on this page; (2) an
+  // automatic bitrate cap that backs off when the call is routed through
+  // the TURN relay; (3) a manual "Low Bandwidth" toggle.
+  //
+  // Design goals: never touch the call's own variables or functions
+  // (pc, localStream, startLocalStream, createPeerConnection, etc.) —
+  // this block only *observes* them — so a bug here can't break calling,
+  // and the whole module can be deleted by removing this block plus the
+  // matching CSS/HTML blocks marked above, plus deleting public/diagnostics.html.
+  // Reports are viewed separately, on /diagnostics.html — nothing here
+  // changes what either side sees on the call screen itself.
+  const DIAG_LS_LIVE = 'trainingCall:diag:liveStats';
+  const DIAG_LS_LOG = 'trainingCall:diag:sessionLog';
+  const DIAG_LS_LOWBW = 'trainingCall:diag:lowBandwidth';
+  const DIAG_MAX_LOG_ENTRIES = 50;
+  const DIAG_POLL_MS = 3000;
+  const DIAG_BITRATE_FULL = 2500000;  // ~2.5 Mbps cap, matches the 1080p target
+  const DIAG_BITRATE_RELAY = 900000;  // auto cap when routed via TURN relay
+  const DIAG_BITRATE_LOW = 350000;    // manual "Low Bandwidth" cap
+
+  const bandwidthBtn = document.getElementById('bandwidthBtn');
+
+  let lowBandwidthMode = localStorage.getItem(DIAG_LS_LOWBW) === '1';
+  let diagLastPc = null;
+  let diagPollTimer = null;
+  let diagSessionStart = null;
+  let diagBitrateSamples = [];
+  let diagReconnectCount = 0;
+  let diagCandidateType = null;
+  let diagPrevBytes = { sent: 0, received: 0, audioSent: 0, audioReceived: 0, time: 0 };
+
+  function diagSetButtonLabel() {
+    if (!bandwidthBtn) return;
+    bandwidthBtn.textContent = 'Low Bandwidth: ' + (lowBandwidthMode ? 'On' : 'Off');
+    bandwidthBtn.classList.toggle('active-off', lowBandwidthMode);
+  }
+  diagSetButtonLabel();
+
+  async function diagApplyBitrateCap(kbpsCap) {
+    if (!pc) return;
+    try {
+      const sender = pc.getSenders().find((s) => s.track && s.track.kind === 'video');
+      if (!sender) return;
+      const params = sender.getParameters();
+      if (!params.encodings || !params.encodings.length) params.encodings = [{}];
+      params.encodings[0].maxBitrate = kbpsCap;
+      await sender.setParameters(params);
+    } catch (e) { /* never let a diagnostics failure affect the call */ }
+  }
+
+  async function diagApplyBandwidthMode() {
+    if (lowBandwidthMode) {
+      await diagApplyBitrateCap(DIAG_BITRATE_LOW);
+      const track = localStream && localStream.getVideoTracks()[0];
+      if (track) {
+        try {
+          await track.applyConstraints({ width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 20 } });
+        } catch (e) {}
+      }
+    } else {
+      // Hand back to the automatic cap (full quality, or relay-reduced —
+      // diagPollStats will reassert the right one on its next tick).
+      await diagApplyBitrateCap(DIAG_BITRATE_FULL);
+      const track = localStream && localStream.getVideoTracks()[0];
+      if (track) {
+        try {
+          await track.applyConstraints({ width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } });
+        } catch (e) {}
+      }
+    }
+  }
+
+  if (bandwidthBtn) {
+    bandwidthBtn.addEventListener('click', () => {
+      lowBandwidthMode = !lowBandwidthMode;
+      localStorage.setItem(DIAG_LS_LOWBW, lowBandwidthMode ? '1' : '0');
+      diagSetButtonLabel();
+      diagApplyBandwidthMode();
+    });
+  }
+
+  function diagFinalizeSession() {
+    if (!diagSessionStart || diagBitrateSamples.length === 0) {
+      diagSessionStart = null;
+      diagBitrateSamples = [];
+      diagReconnectCount = 0;
+      diagCandidateType = null;
+      localStorage.removeItem(DIAG_LS_LIVE);
+      return;
+    }
+    const endedAt = Date.now();
+    const avgUp = Math.round(diagBitrateSamples.reduce((a, s) => a + s.up, 0) / diagBitrateSamples.length);
+    const avgDown = Math.round(diagBitrateSamples.reduce((a, s) => a + s.down, 0) / diagBitrateSamples.length);
+    const audioUpSamples = diagBitrateSamples.filter((s) => s.audioUp != null);
+    const audioDownSamples = diagBitrateSamples.filter((s) => s.audioDown != null);
+    const avgAudioUp = audioUpSamples.length ? Math.round(audioUpSamples.reduce((a, s) => a + s.audioUp, 0) / audioUpSamples.length) : null;
+    const avgAudioDown = audioDownSamples.length ? Math.round(audioDownSamples.reduce((a, s) => a + s.audioDown, 0) / audioDownSamples.length) : null;
+    // Loss is a cumulative running total, so the last sample already reflects the whole session.
+    const lossSamples = diagBitrateSamples.filter((s) => s.audioLossPct != null);
+    const finalAudioLossPct = lossSamples.length ? lossSamples[lossSamples.length - 1].audioLossPct : null;
+    const entry = {
+      startedAt: diagSessionStart,
+      endedAt,
+      durationSec: Math.round((endedAt - diagSessionStart) / 1000),
+      avgBitrateUpKbps: avgUp,
+      avgBitrateDownKbps: avgDown,
+      avgAudioBitrateUpKbps: avgAudioUp,
+      avgAudioBitrateDownKbps: avgAudioDown,
+      audioPacketLossPct: finalAudioLossPct,
+      reconnectCount: diagReconnectCount,
+      candidateType: diagCandidateType,
+      bandwidthMode: lowBandwidthMode ? 'low' : 'auto'
+    };
+    try {
+      const log = JSON.parse(localStorage.getItem(DIAG_LS_LOG) || '[]');
+      log.push(entry);
+      while (log.length > DIAG_MAX_LOG_ENTRIES) log.shift();
+      localStorage.setItem(DIAG_LS_LOG, JSON.stringify(log));
+    } catch (e) {}
+    diagSessionStart = null;
+    diagBitrateSamples = [];
+    diagReconnectCount = 0;
+    diagCandidateType = null;
+    localStorage.removeItem(DIAG_LS_LIVE);
+  }
+
+  async function diagPollStats(pcRef) {
+    if (!pcRef) return;
+    try {
+      const stats = await pcRef.getStats();
+      let bytesSent = null, bytesReceived = null, pairLocalCandId = null;
+      let audioBytesSent = null, audioBytesReceived = null, audioPacketsLost = null, audioPacketsReceived = null;
+      stats.forEach((report) => {
+        if (report.type === 'outbound-rtp' && report.kind === 'video') bytesSent = report.bytesSent;
+        if (report.type === 'inbound-rtp' && report.kind === 'video') bytesReceived = report.bytesReceived;
+        if (report.type === 'outbound-rtp' && report.kind === 'audio') audioBytesSent = report.bytesSent;
+        if (report.type === 'inbound-rtp' && report.kind === 'audio') {
+          audioBytesReceived = report.bytesReceived;
+          audioPacketsLost = report.packetsLost;
+          audioPacketsReceived = report.packetsReceived;
+        }
+        if (report.type === 'candidate-pair' && report.state === 'succeeded' && (report.nominated || report.selected)) {
+          pairLocalCandId = report.localCandidateId;
+        }
+      });
+      let candidateType = diagCandidateType;
+      if (pairLocalCandId) {
+        const localCand = stats.get(pairLocalCandId);
+        if (localCand && localCand.candidateType) candidateType = localCand.candidateType; // host/srflx/relay/prflx
+      }
+
+      const now = performance.now();
+      let kbpsUp = null, kbpsDown = null, audioKbpsUp = null, audioKbpsDown = null;
+      const dt = diagPrevBytes.time ? (now - diagPrevBytes.time) / 1000 : 0;
+      if (dt > 0 && bytesSent != null) kbpsUp = Math.max(0, Math.round(((bytesSent - diagPrevBytes.sent) * 8) / dt / 1000));
+      if (dt > 0 && bytesReceived != null) kbpsDown = Math.max(0, Math.round(((bytesReceived - diagPrevBytes.received) * 8) / dt / 1000));
+      if (dt > 0 && audioBytesSent != null) audioKbpsUp = Math.max(0, Math.round(((audioBytesSent - diagPrevBytes.audioSent) * 8) / dt / 1000));
+      if (dt > 0 && audioBytesReceived != null) audioKbpsDown = Math.max(0, Math.round(((audioBytesReceived - diagPrevBytes.audioReceived) * 8) / dt / 1000));
+      const audioLossPct = (audioPacketsLost != null && audioPacketsReceived != null && (audioPacketsLost + audioPacketsReceived) > 0)
+        ? Math.round((audioPacketsLost / (audioPacketsLost + audioPacketsReceived)) * 1000) / 10
+        : null;
+      diagPrevBytes = {
+        sent: bytesSent || 0, received: bytesReceived || 0,
+        audioSent: audioBytesSent || 0, audioReceived: audioBytesReceived || 0,
+        time: now
+      };
+
+      if (kbpsUp != null && kbpsDown != null) {
+        diagBitrateSamples.push({ up: kbpsUp, down: kbpsDown, audioUp: audioKbpsUp, audioDown: audioKbpsDown, audioLossPct });
+        if (diagBitrateSamples.length > 400) diagBitrateSamples.shift();
+      }
+
+      if (candidateType && candidateType !== diagCandidateType) {
+        diagCandidateType = candidateType;
+        if (!lowBandwidthMode) {
+          diagApplyBitrateCap(candidateType === 'relay' ? DIAG_BITRATE_RELAY : DIAG_BITRATE_FULL);
+        }
+      }
+
+      const vSender = pcRef.getSenders().find((s) => s.track && s.track.kind === 'video');
+      const vReceiver = pcRef.getReceivers().find((r) => r.track && r.track.kind === 'video');
+      const sentSettings = (vSender && vSender.track) ? vSender.track.getSettings() : {};
+      const recvSettings = (vReceiver && vReceiver.track) ? vReceiver.track.getSettings() : {};
+
+      localStorage.setItem(DIAG_LS_LIVE, JSON.stringify({
+        timestamp: Date.now(),
+        connectionState: pcRef.connectionState,
+        candidateType: diagCandidateType,
+        bitrateUpKbps: kbpsUp,
+        bitrateDownKbps: kbpsDown,
+        audioBitrateUpKbps: audioKbpsUp,
+        audioBitrateDownKbps: audioKbpsDown,
+        audioPacketLossPct: audioLossPct,
+        resolutionSent: sentSettings.width ? (sentSettings.width + 'x' + sentSettings.height) : null,
+        resolutionReceived: recvSettings.width ? (recvSettings.width + 'x' + recvSettings.height) : null,
+        reconnectCount: diagReconnectCount,
+        bandwidthMode: lowBandwidthMode ? 'low' : 'auto'
+      }));
+    } catch (e) { /* never let a diagnostics failure affect the call */ }
+  }
+
+  function diagAttachToPc(pcRef) {
+    if (!diagSessionStart) diagSessionStart = Date.now();
+    diagPrevBytes = { sent: 0, received: 0, time: performance.now() };
+    if (lowBandwidthMode) diagApplyBandwidthMode();
+    const diagHandleStateChange = () => {
+      if (pcRef.connectionState === 'disconnected' || pcRef.connectionState === 'failed') {
+        diagReconnectCount++;
+      }
+      if (pcRef.connectionState === 'connected' && !diagPollTimer) {
+        diagPollTimer = setInterval(() => diagPollStats(pcRef), DIAG_POLL_MS);
+      }
+    };
+    pcRef.addEventListener('connectionstatechange', diagHandleStateChange);
+    // Covers the case where the call already reached "connected" in the
+    // moment between pc being created and this watcher noticing it (the
+    // watcher only checks once per second) — without this, a fast-connecting
+    // call (e.g. two tabs on the same network) could skip logging entirely.
+    diagHandleStateChange();
+  }
+
+  // Rather than touch createPeerConnection()/teardownPeerConnection(), this
+  // just watches the existing `pc` variable from the outside and reacts
+  // when it appears or disappears.
+  setInterval(() => {
+    if (pc && pc !== diagLastPc) {
+      diagLastPc = pc;
+      diagAttachToPc(pc);
+    } else if (!pc && diagLastPc) {
+      diagLastPc = null;
+      if (diagPollTimer) { clearInterval(diagPollTimer); diagPollTimer = null; }
+      diagFinalizeSession();
+    }
+  }, 1000);
+  // ===== DIAGNOSTICS MODULE END =======================================
+
+  // ===== SELF-VIEW POPOUT MODULE ========================================
+  // Opens your own camera feed in a separate browser window so you can see
+  // yourself the way Maria does — large, and unmirrored (the small preview
+  // on video#local is flipped via CSS for comfort, but the real feed sent
+  // over WebRTC, and the one shown in this popped-out window, is not; the
+  // popout has no stylesheet of its own so no flip is ever applied).
+  //
+  // Opens as a plain window near the main screen; drag/resize it onto the
+  // second monitor manually. No automatic screen-placement logic — kept
+  // deliberately simple.
+  //
+  // Delete this whole block plus the matching HTML block in the footer to
+  // remove the feature entirely; nothing else in the app depends on it.
+  const popoutBtn = document.getElementById('popoutBtn');
+  let popoutWindow = null;
+  let popoutVideoEl = null;
+
+  function popoutUpdateStream() {
+    if (!popoutVideoEl) return;
+    try { popoutVideoEl.srcObject = localStream; } catch (e) {}
+  }
+
+  async function openSelfViewPopout() {
+    if (popoutWindow && !popoutWindow.closed) {
+      popoutWindow.focus();
+      return;
+    }
+
+    // Opens as a normal window near the main screen — no automatic
+    // screen-placement logic. Drag/resize it onto the other monitor
+    // manually; the browser will usually remember its size and position
+    // for next time.
+    popoutWindow = window.open('', 'selfViewPopout', 'width=800,height=600');
+    if (!popoutWindow) return; // popup blocked; nothing more we can do here
+
+    const doc = popoutWindow.document;
+    doc.title = 'My View';
+    const style = doc.createElement('style');
+    style.textContent = 'html,body{margin:0;padding:0;height:100%;background:#000;}' +
+      'video{width:100%;height:100%;object-fit:contain;background:#000;display:block;}';
+    doc.head.appendChild(style);
+    const video = doc.createElement('video');
+    video.id = 'popoutVideo';
+    video.autoplay = true;
+    video.playsInline = true;
+    video.muted = true;
+    doc.body.appendChild(video);
+
+    popoutVideoEl = video;
+    popoutUpdateStream();
+  }
+
+  if (popoutBtn) {
+    popoutBtn.addEventListener('click', () => { openSelfViewPopout(); });
+  }
+  // ===== SELF-VIEW POPOUT MODULE END =====================================
+
+  // ===== AUTO-FRAME MODULE: JS START =====================================
+  // Host-driven auto-framing, ported from the v13 bench
+  // (~/training-call/autoframe-test/index.html, 40852 bytes).
+  //
+  // Everything in this module is self-contained: it injects its own CSS and its
+  // own panel into document.body, and touches NO live-app markup. Deleting from
+  // the START banner to the END banner returns this file to the live app plus
+  // the three inline edits noted at the top of <head>.
+  //
+  // It does not hook startLocalStream(). Instead it OBSERVES localVideo.srcObject
+  // every animation frame and adopts whatever video track is currently live. That
+  // means camera switching keeps working exactly as it does in the live app
+  // (replaceTrack, call stays up) and this module simply follows along — no
+  // teardown, no dropped video for the trainer.
+  //
+  // Two deliberate changes from the bench, both deliberate, both explained below:
+  //   1. restoreInv() runs BEFORE the controls go live (the v13 ordering defect).
+  //   2. Detection reads a downscaled offscreen canvas, not the 1080p element.
+
+  const AF_LS_TUNE = 'afTune_v14';
+  const AF_LS_INV  = 'afInv_v14';
+  const AF_U = 3600;        // motor units per degree
+  const AF_MIN_CMD = 900;   // 0.25° — below this a command isn't worth a round trip
+  const AF_TORSO = [11, 12, 23, 24];
+
+  // v13 validated defaults, carried forward verbatim from the bench.
+  const AF_DEFAULTS = {
+    torso: 0.42, vDead: 0.06, hDead: 0.06, stepT: 6, stepP: 12,
+    tGain: 120000, pGain: 200000, rate: 300, smooth: 0.35, reacq: 0,
+    detHz: 12, panOn: true, invT: true, invP: true
+  };
+
+  let afPose = null, afPoseReady = false, afPoseError = null;
+  let afTrack = null, afCaps = null, afOpenDeviceId = null;
+  let afFraming = false;
+  let afLastVideoTime = -1, afLastDetect = 0, afLastCmd = 0;
+  let afCmdInFlight = false, afPumpAlt = 0;
+  let afWant = { tilt: null, pan: null };
+  let afCurTilt = 0, afCurPan = 0;
+  let afSmX = null, afSmY = null;
+  let afLostSince = 0, afRecentred = false;
+  let afPanelOpen = false;
+  let afLastResult = null;
+
+  const afT = Object.assign({}, AF_DEFAULTS);
+  const afM = {
+    frames: 0, fpsWin: 0, fpsAt: 0, vidFps: null,
+    detN: 0, detSum: 0, detMax: 0, detMean: null,
+    sup: { tilt: 0, pan: 0 }, clamp: { tilt: 0, pan: 0 },
+    peakT: 0, peakP: 0, errs: 0, lost: 0,
+    vis: null
+  };
+
+  // ---- panel -------------------------------------------------------------
+  const afStyle = document.createElement('style');
+  afStyle.textContent = `
+  #afToggle{position:fixed;right:10px;bottom:10px;z-index:99998;
+    background:rgba(20,22,26,.86);color:#dfe6ee;border:1px solid #3a4250;
+    border-radius:8px;padding:7px 11px;font:600 12px/1 system-ui,sans-serif;
+    cursor:pointer;backdrop-filter:blur(4px)}
+  #afToggle.live{border-color:#2e9e5b;color:#7fe0a3}
+  #afPanel{position:fixed;right:10px;bottom:50px;z-index:99999;width:310px;
+    max-height:78vh;overflow:auto;display:none;background:rgba(16,18,22,.95);
+    color:#dfe6ee;border:1px solid #3a4250;border-radius:10px;padding:10px;
+    font:12px/1.35 system-ui,sans-serif;backdrop-filter:blur(6px)}
+  #afPanel.open{display:block}
+  #afPanel h4{margin:0 0 6px;font-size:12px;letter-spacing:.04em;color:#9fb0c4;
+    text-transform:uppercase}
+  #afPanel .row{display:flex;justify-content:space-between;gap:6px;margin:3px 0}
+  #afPanel .row span:last-child{font-variant-numeric:tabular-nums;color:#fff}
+  #afPanel button{width:100%;margin:4px 0;padding:7px;border-radius:7px;
+    border:1px solid #3a4250;background:#222833;color:#dfe6ee;font-weight:600;
+    cursor:pointer}
+  #afPanel button.go{background:#1d6b3f;border-color:#2e9e5b;color:#dff5e7}
+  #afPanel button:disabled{opacity:.45;cursor:default}
+  #afPanel label{display:flex;align-items:center;gap:6px;margin:3px 0}
+  #afPanel input[type=range]{width:100%}
+  #afPrev{width:100%;border-radius:6px;background:#000;display:block;margin:6px 0}
+  #afLog{max-height:110px;overflow:auto;font:11px/1.3 ui-monospace,monospace;
+    background:#0c0e12;border-radius:6px;padding:5px;margin-top:6px}
+  #afLog div{white-space:pre-wrap}
+  .af-warn{color:#e8c46a}.af-err{color:#ef8080}.af-ok{color:#7fe0a3}
+  #afPanel hr{border:0;border-top:1px solid #2b313c;margin:8px 0}
+  #afPanel .sl{margin:5px 0}
+  #afPanel .sl b{font-weight:600;color:#9fb0c4}
+  `;
+  document.head.appendChild(afStyle);
+
+  const afToggle = document.createElement('button');
+  afToggle.id = 'afToggle';
+  afToggle.textContent = 'Auto-Frame';
+  document.body.appendChild(afToggle);
+
+  const afPanel = document.createElement('div');
+  afPanel.id = 'afPanel';
+  const afSlider = (id, label, min, max, step, val) =>
+    `<div class="sl"><b>${label}</b> <span id="af_${id}V">${val}</span>
+     <input type="range" id="af_${id}" min="${min}" max="${max}" step="${step}" value="${val}"></div>`;
+  afPanel.innerHTML = `
+    <h4>Auto-Frame</h4>
+    <div class="row"><span>Model</span><span id="afPoseState">loading…</span></div>
+    <div class="row"><span>Camera</span><span id="afDev">—</span></div>
+    <div class="row"><span>PTZ</span><span id="afPtz">—</span></div>
+    <button id="afGo" class="go" disabled>▶ Start auto-framing</button>
+    <button id="afCenter">Centre both axes</button>
+    <canvas id="afPrev" width="300" height="169"></canvas>
+    <div class="row"><span>Video</span><span id="afFps">—</span></div>
+    <div class="row"><span>Detect</span><span id="afDet">—</span></div>
+    <div class="row"><span>Position</span><span id="afPos">—</span></div>
+    <div class="row"><span>Slew peak</span><span id="afSlew">—</span></div>
+    <div class="row"><span>Torso vis</span><span id="afVis">—</span></div>
+    <div class="row"><span>Lost / sup / clamp</span><span id="afCounts">—</span></div>
+    <hr>
+    <label><input type="checkbox" id="af_invT"> Invert tilt</label>
+    <label><input type="checkbox" id="af_invP"> Invert pan</label>
+    <label><input type="checkbox" id="af_panOn"> Pan enabled</label>
+    <span id="afInvSaved" class="af-warn"></span>
+    <hr>
+    ${afSlider('torso', 'Torso vertical target', 0.30, 0.55, 0.01, AF_DEFAULTS.torso)}
+    ${afSlider('vDead', 'Tilt deadzone', 0.02, 0.20, 0.01, AF_DEFAULTS.vDead)}
+    ${afSlider('hDead', 'Pan deadzone', 0.02, 0.20, 0.01, AF_DEFAULTS.hDead)}
+    ${afSlider('stepT', 'Tilt step °', 1, 20, 1, AF_DEFAULTS.stepT)}
+    ${afSlider('stepP', 'Pan step °', 1, 30, 1, AF_DEFAULTS.stepP)}
+    ${afSlider('tGain', 'Tilt gain', 20000, 400000, 10000, AF_DEFAULTS.tGain)}
+    ${afSlider('pGain', 'Pan gain', 20000, 500000, 10000, AF_DEFAULTS.pGain)}
+    ${afSlider('rate', 'Command rate ms', 100, 1000, 50, AF_DEFAULTS.rate)}
+    ${afSlider('smooth', 'Smoothing', 0.05, 1.0, 0.05, AF_DEFAULTS.smooth)}
+    ${afSlider('reacq', 'Recentre after s (0=never)', 0, 15, 1, AF_DEFAULTS.reacq)}
+    ${afSlider('detHz', 'Detect rate Hz', 4, 30, 1, AF_DEFAULTS.detHz)}
+    <div id="afLog"></div>
+  `;
+  document.body.appendChild(afPanel);
+
+  const afQ = (id) => document.getElementById(id);
+  const afPrev = afQ('afPrev'), afPrevCtx = afPrev.getContext('2d');
+
+  function afLog(m, c) {
+    const d = document.createElement('div');
+    if (c) d.className = c;
+    d.textContent = new Date().toLocaleTimeString() + '  ' + m;
+    const box = afQ('afLog');
+    box.appendChild(d);
+    while (box.childNodes.length > 200) box.removeChild(box.firstChild);
+    box.scrollTop = box.scrollHeight;
+  }
+
+  afToggle.addEventListener('click', () => {
+    afPanelOpen = !afPanelOpen;
+    afPanel.classList.toggle('open', afPanelOpen);
+  });
+
+  // ---- tuning persistence ------------------------------------------------
+  const AF_SLIDERS = ['torso','vDead','hDead','stepT','stepP','tGain','pGain','rate','smooth','reacq','detHz'];
+  function afReadTune() {
+    AF_SLIDERS.forEach((k) => { afT[k] = +afQ('af_' + k).value; });
+    afT.panOn = afQ('af_panOn').checked;
+    afT.invT  = afQ('af_invT').checked;
+    afT.invP  = afQ('af_invP').checked;
+  }
+  function afSaveTune() {
+    try {
+      const o = {};
+      AF_SLIDERS.forEach((k) => { o[k] = afQ('af_' + k).value; });
+      o.panOn = afQ('af_panOn').checked;
+      localStorage.setItem(AF_LS_TUNE, JSON.stringify(o));
+    } catch (e) {}
+  }
+  function afLoadTune() {
+    try {
+      const o = JSON.parse(localStorage.getItem(AF_LS_TUNE) || 'null');
+      if (!o) return false;
+      AF_SLIDERS.forEach((k) => {
+        if (o[k] != null) { afQ('af_' + k).value = o[k]; afQ('af_' + k + 'V').textContent = o[k]; }
+      });
+      if (o.panOn != null) afQ('af_panOn').checked = o.panOn;
+      return true;
+    } catch (e) { return false; }
+  }
+  AF_SLIDERS.forEach((k) => {
+    afQ('af_' + k).addEventListener('input', () => {
+      afQ('af_' + k + 'V').textContent = afQ('af_' + k).value;
+      afReadTune(); afSaveTune();
+    });
+  });
+  afQ('af_panOn').addEventListener('change', () => { afReadTune(); afSaveTune(); });
+
+  // ---- per-camera invert persistence -------------------------------------
+  function afInvStore() {
+    try { return JSON.parse(localStorage.getItem(AF_LS_INV) || '{}'); } catch (e) { return {}; }
+  }
+  function afSaveInv() {
+    if (!afOpenDeviceId) return;
+    try {
+      const s = afInvStore();
+      s[afOpenDeviceId] = { t: afQ('af_invT').checked, p: afQ('af_invP').checked };
+      localStorage.setItem(AF_LS_INV, JSON.stringify(s));
+      afQ('afInvSaved').textContent = 'saved for ' + afOpenDeviceId.slice(0, 8);
+      afQ('afInvSaved').className = 'af-ok';
+    } catch (e) {}
+  }
+  // ORDERING FIX (v13 defect): this runs while the controls are still disabled,
+  // BEFORE the user can touch a checkbox. In v13 it ran at the end of
+  // startStream(), so a hand-set pair was silently overwritten on every open —
+  // four combinations were set and one combination was tested, four times.
+  function afRestoreInv() {
+    afQ('afInvSaved').textContent = '';
+    if (!afOpenDeviceId) return;
+    const s = afInvStore()[afOpenDeviceId];
+    if (!s) {
+      afQ('afInvSaved').textContent = 'no saved inverts for ' + afOpenDeviceId.slice(0, 8);
+      afQ('afInvSaved').className = 'af-warn';
+      afLog('No saved inverts for ' + afOpenDeviceId.slice(0, 8) + ' — set them by hand; they persist from here.', 'af-warn');
+      return;
+    }
+    afQ('af_invT').checked = !!s.t;
+    afQ('af_invP').checked = !!s.p;
+    afReadTune();
+    afQ('afInvSaved').textContent = 'restored for ' + afOpenDeviceId.slice(0, 8);
+    afQ('afInvSaved').className = 'af-ok';
+    afLog('Inverts restored for ' + afOpenDeviceId.slice(0, 8) + ': tilt ' + (s.t ? 'ON' : 'OFF') + ', pan ' + (s.p ? 'ON' : 'OFF') + '.', 'af-ok');
+  }
+  ['af_invT', 'af_invP'].forEach((id) => {
+    afQ(id).addEventListener('change', () => { afReadTune(); afSaveInv(); });
+  });
+
+  // ---- pose model (dynamic import: a CDN failure must not kill the call) ---
+  (async function afInitPose() {
+    try {
+      const vision = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14');
+      const fileset = await vision.FilesetResolver.forVisionTasks(
+        'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm');
+      const make = (delegate) => vision.PoseLandmarker.createFromOptions(fileset, {
+        baseOptions: {
+          modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task',
+          delegate
+        },
+        runningMode: 'VIDEO', numPoses: 1,
+        minPoseDetectionConfidence: 0.5, minTrackingConfidence: 0.5
+      });
+      try {
+        afPose = await make('GPU');
+        afQ('afPoseState').textContent = 'ready (GPU)';
+        afLog('Pose model ready (GPU).', 'af-ok');
+      } catch (e) {
+        afLog('GPU delegate failed, falling back to CPU…', 'af-warn');
+        afPose = await make('CPU');
+        afQ('afPoseState').textContent = 'ready (CPU)';
+        afLog('Pose model ready (CPU).', 'af-warn');
+      }
+      afPoseReady = true;
+      if (afTrack && afCaps && afCaps.tilt) afQ('afGo').disabled = false;
+    } catch (err) {
+      afPoseError = err;
+      afQ('afPoseState').textContent = 'FAILED';
+      afLog('Pose model failed to load: ' + err.message + ' — the call is unaffected; auto-framing is unavailable.', 'af-err');
+    }
+  })();
+
+  // ---- motor command queue (ported from v13) -----------------------------
+  function afClamp(axis, v) {
+    const c = afCaps[axis];
+    return Math.max(c.min, Math.min(c.max, Math.round(v)));
+  }
+  function afQueue(axis, val) {
+    if (afWant[axis] !== null) afM.sup[axis]++;
+    afWant[axis] = val;
+    afPump();
+  }
+  async function afPump() {
+    if (afCmdInFlight || !afTrack) return;
+    const order = afPumpAlt ? ['pan', 'tilt'] : ['tilt', 'pan'];
+    let axis = null;
+    for (const a of order) { if (afWant[a] !== null) { axis = a; break; } }
+    if (axis === null) return;
+    afPumpAlt ^= 1;
+    const val = afWant[axis];
+    afWant[axis] = null;
+    const before = (axis === 'tilt') ? afCurTilt : afCurPan;
+    afCmdInFlight = true;
+    try {
+      await afTrack.applyConstraints({ advanced: [{ [axis]: val }] });
+      const s = afTrack.getSettings ? afTrack.getSettings() : {};
+      const rep = (typeof s[axis] === 'number') ? s[axis] : val;
+      if (Math.abs(rep - val) > AF_U / 2) {
+        afM.clamp[axis]++;
+        if (afM.clamp[axis] === 1 || afM.clamp[axis] % 20 === 0) {
+          afLog(axis + ' clamped at limit (asked ' + (val / AF_U).toFixed(0) + '°, got ' + (rep / AF_U).toFixed(0) + '°).', 'af-warn');
+        }
+      }
+      const moved = Math.abs(rep - before) / AF_U;
+      if (axis === 'tilt') { afCurTilt = rep; if (moved > afM.peakT) afM.peakT = moved; }
+      else { afCurPan = rep; if (moved > afM.peakP) afM.peakP = moved; }
+    } catch (e) {
+      afM.errs++;
+      afLog('applyConstraints: ' + e.message, 'af-err');
+    } finally {
+      afCmdInFlight = false;
+    }
+    afPump();
+  }
+  function afCenterBoth() {
+    if (!afTrack || !afCaps) return;
+    if (afCaps.tilt) afQueue('tilt', afClamp('tilt', 0));
+    if (afCaps.pan) afQueue('pan', afClamp('pan', 0));
+    afSmX = afSmY = null;
+  }
+  afQ('afCenter').addEventListener('click', () => { afCenterBoth(); afLog('Centred.'); });
+
+  afQ('afGo').addEventListener('click', () => {
+    if (!afTrack) { afLog('No camera track yet.', 'af-warn'); return; }
+    afFraming = !afFraming;
+    afQ('afGo').textContent = afFraming ? '⏸ Stop auto-framing' : '▶ Start auto-framing';
+    afQ('afGo').className = afFraming ? '' : 'go';
+    afToggle.classList.toggle('live', afFraming);
+    afToggle.textContent = afFraming ? 'Auto-Frame ●' : 'Auto-Frame';
+    afSmX = afSmY = null; afLostSince = 0; afRecentred = false;
+    afLog(afFraming ? 'Auto-framing ON.' : 'Auto-framing OFF.', afFraming ? 'af-ok' : 'af-warn');
+  });
+
+  // ---- track adoption ----------------------------------------------------
+  async function afAdoptTrack(t) {
+    afTrack = t;
+    afCaps = null; afOpenDeviceId = null;
+    afWant = { tilt: null, pan: null };
+    afCmdInFlight = false;
+    afSmX = afSmY = null; afLostSince = 0; afRecentred = false;
+    if (afFraming) {
+      afFraming = false;
+      afQ('afGo').textContent = '▶ Start auto-framing';
+      afQ('afGo').className = 'go';
+      afToggle.classList.remove('live');
+      afToggle.textContent = 'Auto-Frame';
+      afLog('Camera changed — auto-framing stopped. Confirm inverts, then restart it.', 'af-warn');
+    }
+    afQ('afGo').disabled = true;
+    if (!t) { afQ('afDev').textContent = '—'; afQ('afPtz').textContent = '—'; return; }
+
+    const st = t.getSettings ? t.getSettings() : {};
+    afOpenDeviceId = st.deviceId || null;
+    afCaps = t.getCapabilities ? t.getCapabilities() : {};
+    afCurTilt = (typeof st.tilt === 'number') ? st.tilt : 0;
+    afCurPan = (typeof st.pan === 'number') ? st.pan : 0;
+    afM.sup = { tilt: 0, pan: 0 }; afM.clamp = { tilt: 0, pan: 0 };
+    afM.peakT = 0; afM.peakP = 0; afM.detMax = 0; afM.detN = 0; afM.detSum = 0;
+
+    afQ('afDev').textContent = afOpenDeviceId ? afOpenDeviceId.slice(0, 8) : '(no id)';
+    const hasT = afCaps && afCaps.tilt && typeof afCaps.tilt.max === 'number';
+    const hasP = afCaps && afCaps.pan && typeof afCaps.pan.max === 'number';
+    afQ('afPtz').textContent = (hasT ? 'tilt ' : '') + (hasP ? 'pan ' : '') + (afCaps.zoom ? 'zoom' : '') || 'none';
+
+    // Restore BEFORE the controls become usable — see afRestoreInv().
+    afRestoreInv();
+
+    // Widest zoom on open: a wider frame is fewer losses (v14 item 3).
+    if (afCaps.zoom && typeof afCaps.zoom.min === 'number') {
+      try {
+        await t.applyConstraints({ advanced: [{ zoom: afCaps.zoom.min }] });
+        afLog('Zoom set to widest (' + afCaps.zoom.min + ').');
+      } catch (e) { afLog('Zoom set failed: ' + e.message, 'af-warn'); }
+    } else {
+      afLog('No zoom capability reported on this unit.', 'af-warn');
+    }
+
+    if (hasT) {
+      if (afPoseReady) afQ('afGo').disabled = false;
+      afLog('Camera ' + (afOpenDeviceId || '').slice(0, 8) + ' adopted. Tilt/pan available.', 'af-ok');
+    } else {
+      afLog('This camera exposes no tilt — pick a PIXY in the camera list.', 'af-err');
+    }
+  }
+
+  // ---- pose helpers ------------------------------------------------------
+  function afAvg(lms, idx, key) {
+    let s = 0, n = 0;
+    idx.forEach((i) => {
+      const p = lms[i];
+      if (p && (p.visibility == null || p.visibility > 0.4)) { s += p[key]; n++; }
+    });
+    return n ? s / n : null;
+  }
+  const afEma = (prev, val, a) => (prev === null ? val : prev + a * (val - prev));
+  function afVisStats(lms) {
+    let s = 0, n = 0, mn = 1;
+    for (const i of AF_TORSO) {
+      const p = lms[i];
+      if (!p) continue;
+      const v = (p.visibility == null) ? 1 : p.visibility;
+      s += v; n++; if (v < mn) mn = v;
+    }
+    return n ? { mean: s / n, min: mn } : null;
+  }
+
+  // ---- drive (ported from v13 maybeDrive) --------------------------------
+  function afMaybeDrive(result) {
+    const now = performance.now();
+    const lms = result && result.landmarks && result.landmarks[0];
+
+    if (!lms) {
+      if (afLostSince === 0) { afLostSince = now; return; }
+      if (afT.reacq > 0 && !afRecentred && now - afLostSince > afT.reacq * 1000) {
+        afRecentred = true; afM.lost++;
+        afLog('Lost for ' + afT.reacq + 's — recentring (loss #' + afM.lost + ').', 'af-warn');
+        afCenterBoth();
+      }
+      return;
+    }
+    afLostSince = 0; afRecentred = false;
+
+    if (now - afLastCmd < afT.rate) return;
+    const cX = afAvg(lms, AF_TORSO, 'x'), cY = afAvg(lms, AF_TORSO, 'y');
+    if (cX === null || cY === null) return;
+    afSmX = afEma(afSmX, cX, afT.smooth);
+    afSmY = afEma(afSmY, cY, afT.smooth);
+    afLastCmd = now;
+
+    if (afCaps.tilt) {
+      const errY = afSmY - afT.torso;
+      const mag = Math.abs(errY) - afT.vDead;
+      if (mag > 0) {
+        let d = -Math.sign(errY) * mag * afT.tGain;
+        if (afT.invT) d = -d;
+        const stepU = afT.stepT * AF_U;
+        d = Math.max(-stepU, Math.min(stepU, d));
+        if (Math.abs(d) >= AF_MIN_CMD) afQueue('tilt', afClamp('tilt', afCurTilt + d));
+      }
+    }
+    if (afT.panOn && afCaps.pan) {
+      const errX = afSmX - 0.5;
+      const mag = Math.abs(errX) - afT.hDead;
+      if (mag > 0) {
+        let d = Math.sign(errX) * mag * afT.pGain;
+        if (afT.invP) d = -d;
+        const stepU = afT.stepP * AF_U;
+        d = Math.max(-stepU, Math.min(stepU, d));
+        if (Math.abs(d) >= AF_MIN_CMD) afQueue('pan', afClamp('pan', afCurPan + d));
+      }
+    }
+  }
+
+  // ---- render (panel only — hidden panel costs nothing) -------------------
+  function afRender(result) {
+    if (!afPanelOpen) return;
+    const el = localVideo;
+    if (!el || !el.videoWidth) return;
+    const w = afPrev.width;
+    const h = Math.round(w * el.videoHeight / el.videoWidth);
+    if (afPrev.height !== h) afPrev.height = h;
+    afPrevCtx.drawImage(el, 0, 0, w, h);
+    const lms = result && result.landmarks && result.landmarks[0];
+    if (!lms) return;
+    afPrevCtx.fillStyle = '#7fe0a3';
+    AF_TORSO.forEach((i) => {
+      const p = lms[i];
+      if (!p) return;
+      afPrevCtx.beginPath();
+      afPrevCtx.arc(p.x * w, p.y * h, 3, 0, 6.2832);
+      afPrevCtx.fill();
+    });
+    if (afSmX !== null && afSmY !== null) {
+      const x = afSmX * w, y = afSmY * h;
+      afPrevCtx.strokeStyle = '#4aa3ff';
+      afPrevCtx.lineWidth = 1.5;
+      afPrevCtx.beginPath();
+      afPrevCtx.moveTo(x - 9, y); afPrevCtx.lineTo(x + 9, y);
+      afPrevCtx.moveTo(x, y - 9); afPrevCtx.lineTo(x, y + 9);
+      afPrevCtx.stroke();
+    }
+    afPrevCtx.strokeStyle = 'rgba(255,255,255,.35)';
+    afPrevCtx.lineWidth = 1;
+    afPrevCtx.beginPath();
+    afPrevCtx.moveTo(0, afT.torso * h); afPrevCtx.lineTo(w, afT.torso * h);
+    afPrevCtx.stroke();
+  }
+
+  function afPaint() {
+    if (!afPanelOpen) return;
+    const f = (v, d) => (v == null ? '—' : v.toFixed(d));
+    afQ('afFps').textContent = afM.vidFps == null ? '—' : afM.vidFps.toFixed(1) + ' /s';
+    afQ('afDet').textContent = afM.detMean == null ? '—'
+      : f(afM.detMean, 1) + ' ms (max ' + f(afM.detMax, 0) + ')';
+    afQ('afPos').textContent = 'T ' + (afCurTilt / AF_U).toFixed(0) + '° · P ' + (afCurPan / AF_U).toFixed(0) + '°';
+    afQ('afSlew').textContent = 'T ' + f(afM.peakT, 0) + ' · P ' + f(afM.peakP, 0);
+    afQ('afVis').textContent = afM.vis ? f(afM.vis.mean, 3) + ' / ' + f(afM.vis.min, 3) : '—';
+    afQ('afCounts').textContent = afM.lost + ' / ' + (afM.sup.tilt + afM.sup.pan) + ' / ' + (afM.clamp.tilt + afM.clamp.pan);
+  }
+
+  // ---- main loop ---------------------------------------------------------
+  // Detection reads a DOWNSCALED offscreen canvas, not the 1080p element the
+  // bench used at 720p. MediaPipe resizes to 256x256 internally, so this costs
+  // nothing in accuracy and removes a 2.25x per-frame texture upload — the
+  // single biggest difference between bench conditions and a live 1080p call.
+  const afDet = document.createElement('canvas');
+  const afDetCtx = afDet.getContext('2d', { willReadFrequently: false });
+  const AF_DET_W = 480;
+
+  function afLoop() {
+    requestAnimationFrame(afLoop);
+    const el = localVideo;
+    if (!el) return;
+
+    const s = el.srcObject;
+    const t = (s && s.getVideoTracks) ? (s.getVideoTracks()[0] || null) : null;
+    if (t !== afTrack) { afAdoptTrack(t); return; }
+    if (!afTrack || el.readyState < 2 || !el.videoWidth) return;
+    if (el.currentTime === afLastVideoTime) return;
+    afLastVideoTime = el.currentTime;
+
+    const now = performance.now();
+    afM.fpsWin++;
+    if (now - afM.fpsAt >= 1000) {
+      afM.vidFps = afM.fpsWin * 1000 / (now - afM.fpsAt);
+      afM.fpsWin = 0; afM.fpsAt = now;
+      afPaint();
+    }
+
+    if (!afPoseReady) return;
+    const interval = 1000 / Math.max(1, afT.detHz);
+    if (now - afLastDetect < interval) return;
+    afLastDetect = now;
+
+    const w = AF_DET_W;
+    const h = Math.round(w * el.videoHeight / el.videoWidth);
+    if (afDet.width !== w || afDet.height !== h) { afDet.width = w; afDet.height = h; }
+    afDetCtx.drawImage(el, 0, 0, w, h);
+
+    let result = null;
+    const t0 = performance.now();
+    try { result = afPose.detectForVideo(afDet, t0); } catch (e) { afM.errs++; }
+    const dt = performance.now() - t0;
+    afM.detN++; afM.detSum += dt;
+    if (dt > afM.detMax) afM.detMax = dt;
+    afM.detMean = afM.detSum / afM.detN;
+    if (afM.detN > 200) { afM.detSum = afM.detMean * 50; afM.detN = 50; }
+
+    const lms = result && result.landmarks && result.landmarks[0];
+    if (lms) afM.vis = afVisStats(lms);
+    afLastResult = result;
+
+    afRender(result);
+    if (afFraming) afMaybeDrive(result);
+  }
+
+  // ---- boot --------------------------------------------------------------
+  if (afLoadTune()) afLog('Tuning restored.', 'af-ok');
+  afReadTune();
+  afLog('Auto-frame module loaded (v14 merge).', 'af-ok');
+  afLog('Inverts are stored per deviceId PER ORIGIN — nothing carries over from the bench on localhost:8090. Expect to set them once here.', 'af-warn');
+  requestAnimationFrame(afLoop);
+  // ===== AUTO-FRAME MODULE: JS END =======================================
+
+
+  init();
+})();
+</script>
+</body>
+</html>

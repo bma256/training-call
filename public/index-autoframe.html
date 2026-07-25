@@ -943,6 +943,7 @@
       if (msg.type === 'camera-list') {
         renderRemoteCameraButtons(msg.cameras || []);
       } else if (msg.type === 'switch-camera') {
+        console.log('[cam-switch] RECEIVED switch-camera deviceId=' + msg.deviceId + ' at ' + new Date().toISOString());
         const opt = [...cameraSelect.options].find((o) => o.value === msg.deviceId);
         if (!opt) return; // camera no longer present on this side — ignore
         cameraSelect.value = msg.deviceId;
@@ -979,6 +980,7 @@
       btn.textContent = cam.label;
       if (cam.active) btn.classList.add('cam-switch-active');
       btn.addEventListener('click', () => {
+        console.log('[cam-switch] SEND switch-camera deviceId=' + cam.deviceId + ' at ' + new Date().toISOString());
         if (controlChannel && controlChannel.readyState === 'open') {
           controlChannel.send(JSON.stringify({ type: 'switch-camera', deviceId: cam.deviceId }));
         }

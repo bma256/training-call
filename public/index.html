@@ -1262,20 +1262,26 @@
     try { popoutVideoEl.srcObject = localStream; } catch (e) {}
   }
 
-  async function openSelfViewPopout() {
-    if (popoutWindow && !popoutWindow.closed) {
-      popoutWindow.focus();
-      return;
+  // PIP-TEST BUILD: Document Picture-in-Picture first (Design B), window.open fallback.
+  // Detection loop reads on-page #local; we do NOT move it. A separate lightweight
+  // <video> goes into the PiP surface on the same localStream, so detection is
+  // untouched; the only variable under test is PiP surface vs window.open decode.
+  function pipSetBadge(text, ok) {
+    let b = document.getElementById('pipPathBadge');
+    if (!b) {
+      b = document.createElement('div');
+      b.id = 'pipPathBadge';
+      b.style.cssText = 'position:fixed;left:10px;bottom:10px;z-index:100000;' +
+        'font:12px/1.4 monospace;padding:5px 9px;border-radius:6px;' +
+        'background:#111;border:1px solid #333;color:#fff;pointer-events:none;';
+      document.body.appendChild(b);
     }
+    b.textContent = 'popout path: ' + text;
+    b.style.borderColor = ok ? '#2e9e5b' : '#a55';
+    b.style.color = ok ? '#dff5e7' : '#f4d0d0';
+  }
 
-    // Opens as a normal window near the main screen — no automatic
-    // screen-placement logic. Drag/resize it onto the other monitor
-    // manually; the browser will usually remember its size and position
-    // for next time.
-    popoutWindow = window.open('', 'selfViewPopout', 'width=800,height=600');
-    if (!popoutWindow) return; // popup blocked; nothing more we can do here
-
-    const doc = popoutWindow.document;
+  function pipBuildVideoIn(doc) {
     doc.title = 'My View';
     const style = doc.createElement('style');
     style.textContent = 'html,body{margin:0;padding:0;height:100%;background:#000;}' +
@@ -1287,9 +1293,41 @@
     video.playsInline = true;
     video.muted = true;
     doc.body.appendChild(video);
-
     popoutVideoEl = video;
     popoutUpdateStream();
+  }
+
+  async function openSelfViewPopout() {
+    if (popoutWindow && !popoutWindow.closed) {
+      popoutWindow.focus();
+      return;
+    }
+    if (window.documentPictureInPicture && documentPictureInPicture.window) {
+      try { documentPictureInPicture.window.focus(); } catch (e) {}
+      return;
+    }
+
+    if ('documentPictureInPicture' in window) {
+      try {
+        const pipWin = await documentPictureInPicture.requestWindow({
+          width: 800, height: 600
+        });
+        pipBuildVideoIn(pipWin.document);
+        pipWin.addEventListener('pagehide', () => { popoutVideoEl = null; });
+        pipSetBadge('documentPictureInPicture', true);
+        return;
+      } catch (e) {
+        pipSetBadge('DPiP failed -> window.open (' + (e && e.name || 'err') + ')', false);
+      }
+    }
+
+    popoutWindow = window.open('', 'selfViewPopout', 'width=800,height=600');
+    if (!popoutWindow) { pipSetBadge('popup blocked', false); return; }
+    pipBuildVideoIn(popoutWindow.document);
+    const bd = document.getElementById('pipPathBadge');
+    if (!bd || bd.textContent.indexOf('DPiP failed') === -1) {
+      pipSetBadge('window.open (legacy)', false);
+    }
   }
 
   if (popoutBtn) {

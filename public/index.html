@@ -1387,7 +1387,7 @@
 
   const afToggle = document.createElement('button');
   afToggle.id = 'afToggle';
-  afToggle.textContent = 'Auto-Frame';
+  afToggle.textContent = 'Advanced';
   document.body.appendChild(afToggle);
 
   const afPanel = document.createElement('div');
@@ -1634,7 +1634,7 @@
     afQ('afGo').textContent = afFraming ? '⏸ Stop auto-framing' : '▶ Start auto-framing';
     afQ('afGo').className = afFraming ? '' : 'go';
     afToggle.classList.toggle('live', afFraming);
-    afToggle.textContent = afFraming ? 'Auto-Frame ●' : 'Auto-Frame';
+    afToggle.textContent = afFraming ? 'Advanced ●' : 'Advanced';
     afSmX = afSmY = null; afLostSince = 0; afRecentred = false;
     afLog(afFraming ? 'Auto-framing ON.' : 'Auto-framing OFF.', afFraming ? 'af-ok' : 'af-warn');
   });
@@ -1651,7 +1651,7 @@
       afQ('afGo').textContent = '▶ Start auto-framing';
       afQ('afGo').className = 'go';
       afToggle.classList.remove('live');
-      afToggle.textContent = 'Auto-Frame';
+      afToggle.textContent = 'Advanced';
       afLog('Camera changed — auto-framing stopped. Confirm inverts, then restart it.', 'af-warn');
     }
     afQ('afGo').disabled = true;

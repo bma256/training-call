@@ -290,18 +290,7 @@
   const LS_HAS_CONNECTED = 'trainingCall:hasConnectedBefore';
 
   const params = new URLSearchParams(location.search);
-  const room = params.get('room') || 'gym';
-
-  // FAMILY-FOOLPROOF BRIDGE — Guarantee A. The native launcher, having resolved
-  // the door camera by its stable USB serial at the OS layer, appends inv=door.
-  // When present, the door's known-good pair (tilt ON, pan ON) is applied
-  // authoritatively on every camera open with ZERO deviceId dependence, and the
-  // per-deviceId localStorage lookup is skipped entirely — so a stale or missing
-  // saved pair (the cause of the failed Maria session) can never drive the motor
-  // the wrong way. Param absent → the page behaves exactly as the base build.
-  const AF_FORCE_INV = ({ door: { t: true, p: true } })[params.get('inv')] || null;
-  console.log('[build] index-autoframe-family Guarantee-A 2026-07-26 — inv=' +
-    (params.get('inv') || '(none)') + (AF_FORCE_INV ? ' (forcing tilt ON, pan ON)' : ''));
+  const room = params.get('room') || 'autoframe';
 
   // Google's public STUN servers — free, no signup, fine for most home networks.
   // ICE tries these (and any direct path) first; they're enough for wifi-to-wifi calls.
@@ -954,7 +943,6 @@
       if (msg.type === 'camera-list') {
         renderRemoteCameraButtons(msg.cameras || []);
       } else if (msg.type === 'switch-camera') {
-        console.log('[cam-switch] RECEIVED switch-camera deviceId=' + msg.deviceId + ' at ' + new Date().toISOString());
         const opt = [...cameraSelect.options].find((o) => o.value === msg.deviceId);
         if (!opt) return; // camera no longer present on this side — ignore
         cameraSelect.value = msg.deviceId;
@@ -991,7 +979,6 @@
       btn.textContent = cam.label;
       if (cam.active) btn.classList.add('cam-switch-active');
       btn.addEventListener('click', () => {
-        console.log('[cam-switch] SEND switch-camera deviceId=' + cam.deviceId + ' at ' + new Date().toISOString());
         if (controlChannel && controlChannel.readyState === 'open') {
           controlChannel.send(JSON.stringify({ type: 'switch-camera', deviceId: cam.deviceId }));
         }
@@ -1326,7 +1313,7 @@
   const AF_DEFAULTS = {
     torso: 0.42, vDead: 0.06, hDead: 0.06, stepT: 6, stepP: 12,
     tGain: 120000, pGain: 200000, rate: 300, smooth: 0.35, reacq: 0,
-    detHz: 6, panOn: true, invT: true, invP: true
+    detHz: 12, panOn: true, invT: true, invP: true
   };
 
   let afPose = null, afPoseReady = false, afPoseError = null;
@@ -1503,35 +1490,12 @@
   // four combinations were set and one combination was tested, four times.
   function afRestoreInv() {
     afQ('afInvSaved').textContent = '';
-
-    // Guarantee A, step 1 — a launcher-forced pair (inv=door) is authoritative.
-    // Checked BEFORE the deviceId guard so it applies with zero deviceId
-    // dependence, overrides both the saved pair and the HTML default, and is
-    // re-asserted on every open. localStorage is skipped entirely in this mode.
-    if (AF_FORCE_INV) {
-      afQ('af_invT').checked = AF_FORCE_INV.t;
-      afQ('af_invP').checked = AF_FORCE_INV.p;
-      afReadTune();
-      afQ('afInvSaved').textContent = 'forced (inv=door): tilt ' + (AF_FORCE_INV.t ? 'ON' : 'OFF') + '/pan ' + (AF_FORCE_INV.p ? 'ON' : 'OFF');
-      afQ('afInvSaved').className = 'af-ok';
-      afLog('Inverts forced by launcher (inv=door): tilt ' + (AF_FORCE_INV.t ? 'ON' : 'OFF') + ', pan ' + (AF_FORCE_INV.p ? 'ON' : 'OFF') + ' — localStorage skipped.', 'af-ok');
-      return;
-    }
-
     if (!afOpenDeviceId) return;
     const s = afInvStore()[afOpenDeviceId];
     if (!s) {
-      // Guarantee A, step 2 — SAFETY FALLBACK (fixes the failed-session cause).
-      // With no saved pair, fall to the known-good default (tilt ON, pan ON from
-      // AF_DEFAULTS) rather than leaving the HTML default of OFF/OFF, which drove
-      // the door camera the wrong way and parked it at a limit. Not written back
-      // to localStorage — a fallback is not a decision.
-      afQ('af_invT').checked = AF_DEFAULTS.invT;
-      afQ('af_invP').checked = AF_DEFAULTS.invP;
-      afReadTune();
-      afQ('afInvSaved').textContent = 'no saved pair — default tilt ' + (AF_DEFAULTS.invT ? 'ON' : 'OFF') + '/pan ' + (AF_DEFAULTS.invP ? 'ON' : 'OFF') + ' for ' + afOpenDeviceId.slice(0, 8);
+      afQ('afInvSaved').textContent = 'no saved inverts for ' + afOpenDeviceId.slice(0, 8);
       afQ('afInvSaved').className = 'af-warn';
-      afLog('No saved inverts for ' + afOpenDeviceId.slice(0, 8) + ' — applied known-good default (tilt ' + (AF_DEFAULTS.invT ? 'ON' : 'OFF') + ', pan ' + (AF_DEFAULTS.invP ? 'ON' : 'OFF') + '). Set them by hand to override; they persist from here.', 'af-warn');
+      afLog('No saved inverts for ' + afOpenDeviceId.slice(0, 8) + ' — set them by hand; they persist from here.', 'af-warn');
       return;
     }
     afQ('af_invT').checked = !!s.t;

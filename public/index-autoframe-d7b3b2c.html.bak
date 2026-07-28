@@ -6,7 +6,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-<title>Training Call — PTZ Test</title>
+<title>Training Call — Auto-Frame</title>
 <style>
   :root {
     --bg: #0b0d10;
@@ -18,27 +18,14 @@
     --danger: #e0556f;
     --warn: #e3b341;
   }
-  /* v7: the double-tap-zoom guard is page-wide, not button-only.
-     v6 scoped touch-action to the `button` rule, which worked — the PTZ
-     panel stopped zooming the page — but every tap landing anywhere else
-     (header, panel background, gaps between controls, the letterboxed
-     margins around the video) still fired iOS double-tap page zoom.
-     `manipulation` disables ONLY the double-tap gesture; scrolling and
-     pinch-to-zoom still work normally. video#remote keeps its stricter
-     `touch-action: none` further down — an id selector outranks `*`. */
-  * { box-sizing: border-box; touch-action: manipulation; }
+  * { box-sizing: border-box; }
   html, body {
     margin: 0; padding: 0; height: 100%;
     background: var(--bg); color: var(--text);
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     overscroll-behavior: none;
   }
-  /* iOS Safari: 100vh is the viewport WITHOUT the browser toolbars, so the
-     body ends up taller than the visible area — the page scrolls, the
-     top-center camera-switch bar slides out of view, and tapping a control
-     near the bottom strands you there. 100dvh accounts for the toolbars.
-     The 100vh line stays first as the fallback for older engines. */
-  body { display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
+  body { display: flex; flex-direction: column; height: 100vh; }
 
   header {
     display: flex; align-items: center; justify-content: space-between;
@@ -146,11 +133,6 @@
     border: 1px solid var(--line); background: var(--bg); color: var(--text);
     border-radius: 10px; padding: 10px 16px; font-size: 14px; font-weight: 500;
     cursor: pointer;
-    /* iOS Safari ignores user-scalable=no, so repeated taps on the PTZ D-pad
-       trigger double-tap-to-zoom on the PAGE. touch-action: manipulation
-       tells Safari this element has no double-tap gesture, which also
-       removes the ~300ms tap delay. */
-    touch-action: manipulation;
   }
   button:hover { border-color: var(--accent); }
   button.active-off { background: rgba(224,85,111,0.15); border-color: var(--danger); color: var(--danger); }
@@ -212,57 +194,12 @@
     border-color: var(--accent); color: var(--accent);
   }
   /* ===== CAMERA REMOTE SWITCH MODULE: CSS END ===== */
-
-  /* ===== TRAINER PTZ CONTROL MODULE: CSS START =====
-     Floating control panel shown ONLY on the trainer side (the side whose
-     peer has a PTZ camera and whose own camera has none), anchored over the
-     bottom-left of the video so it clears the bottom-right self-view PiP and
-     the top-center camera-switch bar. Delete this block (and the matching
-     HTML/JS blocks) to remove the feature entirely. */
-  #ptzPanel {
-    position: absolute;
-    left: calc(12px + env(safe-area-inset-left));
-    bottom: calc(14px + env(safe-area-inset-bottom));
-    z-index: 6;
-    width: 208px;
-    background: rgba(20,23,28,0.85);
-    border: 1px solid var(--line);
-    border-radius: 12px;
-    padding: 10px;
-    -webkit-backdrop-filter: blur(4px);
-    backdrop-filter: blur(4px);
-    user-select: none;
-  }
-  #ptzPanel[hidden] { display: none; }
-  #ptzPanel.collapsed .ptz-body { display: none; }
-  .ptz-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-  .ptz-title { font-size: 12px; font-weight: 600; color: var(--text); }
-  .ptz-collapse { padding: 2px 9px; font-size: 13px; border-radius: 7px; line-height: 1; }
-  .ptz-readout { font-size: 11px; color: var(--muted); margin: 7px 0 8px; min-height: 14px; font-variant-numeric: tabular-nums; letter-spacing: 0.2px; }
-  .ptz-pad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
-  .ptz-pad button { padding: 11px 0; font-size: 15px; border-radius: 9px; }
-  .ptz-pad .ptz-empty { visibility: hidden; }
-  .ptz-zoomrow { display: flex; gap: 6px; margin-top: 6px; }
-  .ptz-zoomrow button { flex: 1; padding: 9px 0; font-size: 13px; border-radius: 9px; }
-  .ptz-steprow { display: flex; align-items: center; gap: 8px; margin-top: 9px; font-size: 11px; color: var(--muted); }
-  .ptz-steprow .seg { display: flex; gap: 4px; }
-  .ptz-steprow .seg button { padding: 5px 11px; font-size: 11px; border-radius: 7px; }
-  .ptz-steprow .seg button.on { background: var(--accent); color: #06201d; border-color: var(--accent); }
-  .ptz-presets { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 9px; }
-  .ptz-presets button { padding: 8px 2px; font-size: 11px; border-radius: 8px; }
-  .ptz-presets button.saved { border-color: var(--accent); color: var(--accent); }
-  .ptz-inv { display: flex; gap: 14px; margin-top: 9px; font-size: 11px; color: var(--muted); }
-  .ptz-inv label { display: flex; align-items: center; gap: 5px; cursor: pointer; }
-  .ptz-row2 { display: flex; gap: 6px; margin-top: 9px; }
-  .ptz-row2 button { flex: 1; padding: 8px 0; font-size: 11px; border-radius: 8px; }
-  #ptzSaveRow[hidden] { display: none; }
-  /* ===== TRAINER PTZ CONTROL MODULE: CSS END ===== */
 </style>
 </head>
 <body>
 
 <header>
-  <div class="title">Training Call — PTZ Test</div>
+  <div class="title">Training Call</div>
   <div class="status"><span class="dot" id="statusDot"></span><span id="statusText">Not connected</span></div>
 </header>
 
@@ -279,61 +216,6 @@
        cameras (nothing useful to switch to). -->
   <div id="camSwitchOverlay" hidden></div>
   <!-- ===== CAMERA REMOTE SWITCH MODULE: overlay END ===== -->
-
-  <!-- ===== TRAINER PTZ CONTROL MODULE: panel START =====
-       Shown only on the trainer side (peer has a PTZ camera, this side's own
-       camera does not). Drives the gym camera over the existing 'control'
-       data channel. Delete this block (and the matching CSS/JS blocks) to
-       remove the feature entirely. -->
-  <div id="ptzPanel" hidden>
-    <div class="ptz-head">
-      <span class="ptz-title">Camera Control</span>
-      <button class="ptz-collapse" id="ptzCollapse" type="button">–</button>
-    </div>
-    <div class="ptz-body" id="ptzBody">
-      <div class="ptz-readout" id="ptzReadout"></div>
-      <div class="ptz-pad">
-        <span class="ptz-empty"></span>
-        <button id="ptzTiltUp" type="button">▲</button>
-        <span class="ptz-empty"></span>
-        <button id="ptzPanLeft" type="button">◀</button>
-        <button id="ptzCenterBtn" type="button" title="Level &amp; wide">◉</button>
-        <button id="ptzPanRight" type="button">▶</button>
-        <span class="ptz-empty"></span>
-        <button id="ptzTiltDown" type="button">▼</button>
-        <span class="ptz-empty"></span>
-      </div>
-      <div class="ptz-zoomrow">
-        <button id="ptzZoomOut" type="button">– Zoom</button>
-        <button id="ptzZoomIn" type="button">Zoom +</button>
-      </div>
-      <div class="ptz-steprow">
-        <span>Step</span>
-        <span class="seg">
-          <button id="ptzStepFine" class="on" type="button">Fine</button>
-          <button id="ptzStepCoarse" type="button">Coarse</button>
-        </span>
-      </div>
-      <div class="ptz-presets">
-        <button class="ptz-preset" data-slot="fullBody" type="button">Full Body</button>
-        <button class="ptz-preset" data-slot="lowerBody" type="button">Lower Body</button>
-        <button class="ptz-preset" data-slot="feet" type="button">Feet</button>
-      </div>
-      <div class="ptz-inv">
-        <label><input type="checkbox" id="ptzInvTilt"> Invert tilt</label>
-        <label><input type="checkbox" id="ptzInvPan"> Invert pan</label>
-      </div>
-      <div class="ptz-row2">
-        <button id="ptzSaveToggle" type="button">Set presets…</button>
-      </div>
-      <div class="ptz-presets" id="ptzSaveRow" hidden>
-        <button class="ptz-save" data-slot="fullBody" type="button">Save→Full</button>
-        <button class="ptz-save" data-slot="lowerBody" type="button">Save→Lower</button>
-        <button class="ptz-save" data-slot="feet" type="button">Save→Feet</button>
-      </div>
-    </div>
-  </div>
-  <!-- ===== TRAINER PTZ CONTROL MODULE: panel END ===== -->
 </main>
 
 <footer>
@@ -386,16 +268,6 @@
     <button id="popoutBtn" title="Open your camera feed in a separate window you can drag to a second monitor">Pop Out My View</button>
   </div>
   <!-- ===== SELF-VIEW POPOUT MODULE: controls END ===== -->
-
-  <!-- ===== TRAINER PTZ CONTROL MODULE: debug line START =====
-       Test-page only. Shows, on each device, what PTZ this side's own camera
-       exposes and what the peer advertised — so we can see at a glance whether
-       the gym is advertising PTZ and whether the trainer received it. Delete
-       this block plus the ptzUpdateDebug() function/calls to remove. -->
-  <div class="controls-row subtle-row">
-    <span id="ptzDebug" style="font-size:11px; color:var(--muted); text-align:center;">PTZ: —</span>
-  </div>
-  <!-- ===== TRAINER PTZ CONTROL MODULE: debug line END ===== -->
 </footer>
 
 <script>
@@ -418,7 +290,7 @@
   const LS_HAS_CONNECTED = 'trainingCall:hasConnectedBefore';
 
   const params = new URLSearchParams(location.search);
-  const room = params.get('room') || 'ptz-test';
+  const room = params.get('room') || 'autoframe';
 
   // Google's public STUN servers — free, no signup, fine for most home networks.
   // ICE tries these (and any direct path) first; they're enough for wifi-to-wifi calls.
@@ -530,17 +402,29 @@
   async function startLocalStream() {
     const videoId = cameraSelect.value || undefined;
     const audioId = micSelect.value || undefined;
+    // AUTO-FRAME EDIT: pan/tilt/zoom:true asks for the PTZ capability so the
+    // active track exposes motor control to applyConstraints(). This is what
+    // triggers Chromium's SECOND permission prompt (camera-control), which is
+    // invisible in --app= mode — launch this page in a normal window.
+    const ptz = { pan: true, tilt: true, zoom: true };
+    const baseVideo = { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } };
+    const videoBase = videoId ? Object.assign({ deviceId: { exact: videoId } }, baseVideo) : Object.assign({}, baseVideo);
     const constraints = {
-      // TRAINER PTZ CONTROL MODULE: pan/tilt/zoom:true requests the PTZ
-      // capability so the active track exposes motor controls to
-      // applyConstraints(). On a non-PTZ webcam these are simply ignored.
-      video: videoId
-        ? { deviceId: { exact: videoId }, pan: true, tilt: true, zoom: true, width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } }
-        : { pan: true, tilt: true, zoom: true, width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } },
+      video: Object.assign({}, videoBase, ptz),
       audio: audioId ? { deviceId: { exact: audioId } } : true
     };
 
-    const newStream = await navigator.mediaDevices.getUserMedia(constraints);
+    // If the PTZ request is refused outright, fall back to a plain stream so the
+    // CALL still happens. Auto-framing is the feature; the call is the point.
+    let newStream;
+    try {
+      newStream = await navigator.mediaDevices.getUserMedia(constraints);
+    } catch (ptzErr) {
+      newStream = await navigator.mediaDevices.getUserMedia({
+        video: videoBase,
+        audio: audioId ? { deviceId: { exact: audioId } } : true
+      });
+    }
 
     if (localStream) {
       localStream.getTracks().forEach((t) => t.stop());
@@ -558,8 +442,6 @@
       if (vSender && videoTrack) vSender.replaceTrack(videoTrack);
       if (aSender && audioTrack) aSender.replaceTrack(audioTrack);
     }
-
-    ptzReadActiveTrack(); // TRAINER PTZ CONTROL MODULE: detect PTZ on the new track + tell the peer
   }
 
   async function init() {
@@ -751,12 +633,6 @@
     controlChannel = null;
     camSwitchOverlay.hidden = true;
     camSwitchOverlay.innerHTML = '';
-    // TRAINER PTZ CONTROL MODULE: the channel is gone, so any control panel
-    // we were showing describes a connection that no longer exists.
-    ptzRemote.available = false;
-    if (ptzApplyTimer) { clearTimeout(ptzApplyTimer); ptzApplyTimer = null; }
-    ptzPendingTarget = null;
-    ptzRenderPanel();
   }
 
   async function startCallFlow() {
@@ -1056,7 +932,7 @@
   const camSwitchOverlay = document.getElementById('camSwitchOverlay');
 
   function setupControlChannel() {
-    controlChannel.onopen = () => { sendCameraList(); ptzReadActiveTrack(); /* TRAINER PTZ CONTROL MODULE */ };
+    controlChannel.onopen = () => sendCameraList();
     controlChannel.onclose = () => {
       camSwitchOverlay.hidden = true;
       camSwitchOverlay.innerHTML = '';
@@ -1072,10 +948,6 @@
         cameraSelect.value = msg.deviceId;
         localStorage.setItem(LS_CAMERA, msg.deviceId);
         if (localStream) startLocalStream().then(sendCameraList);
-      } else if (msg.type === 'ptz-command') {
-        ptzRequestTarget(msg); // TRAINER PTZ CONTROL MODULE: gym side executes
-      } else if (msg.type === 'ptz-capability' || msg.type === 'ptz-state') {
-        ptzHandlePeerMessage(msg); // TRAINER PTZ CONTROL MODULE: trainer side consumes
       }
     };
   }
@@ -1116,372 +988,6 @@
     camSwitchOverlay.hidden = false;
   }
   // ===== CAMERA REMOTE SWITCH MODULE: JS END ==============================
-
-  // ===== TRAINER PTZ CONTROL MODULE: JS START ============================
-  // Lets the REMOTE side (the trainer) pan/tilt/zoom the gym camera over the
-  // same 'control' data channel the camera-switch feature already uses — no
-  // second channel, no server change.
-  //
-  // Roles are decided at runtime by capability, exactly like the rest of the
-  // app: the side holding a PTZ-capable camera (the gym) advertises its PTZ
-  // ranges to the peer; the side that RECEIVES that advertisement, and whose
-  // own camera has no PTZ (the trainer), shows the control panel. Nothing is
-  // hard-coded to "gym" or "trainer".
-  //
-  // Protocol (all JSON over controlChannel):
-  //   gym → trainer   { type:'ptz-capability', available, deviceId, ranges, current }
-  //   gym → trainer   { type:'ptz-state', deviceId, current }      // echoed after each move
-  //   trainer → gym   { type:'ptz-command', pan?, tilt?, zoom? }   // absolute targets
-  //
-  // Safety: the gym clamps every incoming target to SOFT limits kept inside
-  // the motor's hard range (so the trainer can never drive the motor onto a
-  // hard stop — the thing that wedged it during bench testing) and throttles
-  // applyConstraints() so rapid taps can't flood the motor controller.
-  //
-  // To remove: delete this block, the matching CSS/HTML blocks, the ptz* hook
-  // lines in startLocalStream() / setupControlChannel() /
-  // teardownPeerConnection() / the control-channel onmessage handler, and the
-  // pan/tilt/zoom:true additions in startLocalStream()'s constraints.
-
-  const PTZ_SOFT_MARGIN = 7200;       // ~2° kept clear of each hard pan/tilt limit
-  const PTZ_APPLY_THROTTLE_MS = 180;  // min gap between motor commands (gym side)
-  const PTZ_LS_PRESETS = 'trainingCall:ptzPresets';
-  const PTZ_STEP = {
-    fine:   { pan: 3600,  tilt: 3600,  zoom: 3 },   // ~1° / 0.03×
-    coarse: { pan: 10800, tilt: 10800, zoom: 8 }    // ~3° / 0.08×
-  };
-
-  // ---- GYM SIDE (the controlled camera) --------------------------------
-  let ptzTrackCaps = null;      // getCapabilities() of the active PTZ track, or null
-  let ptzActiveDeviceId = null;
-  let ptzCurrent = { pan: 0, tilt: 0, zoom: 100 };
-  let ptzPendingTarget = null;  // latest requested target, applied on the throttle tick
-  let ptzApplyTimer = null;
-  let ptzLastApply = 0;
-  let ptzIHavePTZ = false;      // true on the side whose own camera exposes PTZ (the gym)
-
-  function ptzHasMotors(caps) {
-    // Motorized = can be physically aimed. Zoom-only devices (iOS Safari
-    // reports zoom on the front/back camera) are NOT motorized.
-    return !!caps && (('pan' in caps) || ('tilt' in caps));
-  }
-
-  function ptzReadActiveTrack() {
-    // Runs after the local stream (re)starts and when the channel opens.
-    // Detects whether the active camera exposes PTZ, records ranges + current
-    // values, then advertises to the peer. On a non-PTZ webcam it advertises
-    // "not available", which keeps the trainer's panel correctly hidden.
-    ptzTrackCaps = null;
-    if (localStream) {
-      const track = localStream.getVideoTracks()[0];
-      if (track && track.getCapabilities) {
-        const caps = track.getCapabilities();
-        const settings = track.getSettings ? track.getSettings() : {};
-        if (('tilt' in caps) || ('pan' in caps) || ('zoom' in caps)) {
-          ptzTrackCaps = caps;
-          ptzActiveDeviceId = cameraSelect.value || settings.deviceId || null;
-          ptzCurrent = {
-            pan:  (typeof settings.pan  === 'number') ? settings.pan  : 0,
-            tilt: (typeof settings.tilt === 'number') ? settings.tilt : 0,
-            zoom: (typeof settings.zoom === 'number') ? settings.zoom : (caps.zoom ? caps.zoom.min : 100)
-          };
-        }
-      }
-    }
-    // A camera counts as "mine to be aimed" only if it has MOTORS (pan or
-    // tilt). Zoom alone does NOT count: iOS Safari exposes a zoom capability
-    // on the trainer's iPad/iPhone, and treating that as PTZ made the trainer
-    // side flag itself as the gym and suppress its own control panel.
-    ptzIHavePTZ = ptzHasMotors(ptzTrackCaps);
-    ptzBroadcastCapability();
-    ptzRenderPanel(); // hides the panel on the gym side; harmless on the trainer side
-  }
-
-  function ptzRanges() {
-    if (!ptzTrackCaps) return null;
-    const r = {};
-    ['pan', 'tilt', 'zoom'].forEach((ax) => {
-      if (ptzTrackCaps[ax]) r[ax] = { min: ptzTrackCaps[ax].min, max: ptzTrackCaps[ax].max, step: ptzTrackCaps[ax].step || 1 };
-    });
-    return r;
-  }
-
-  function ptzBroadcastCapability() {
-    if (!controlChannel || controlChannel.readyState !== 'open') return;
-    controlChannel.send(JSON.stringify({
-      type: 'ptz-capability',
-      available: ptzHasMotors(ptzTrackCaps),  // zoom-only cameras are not remotely aimable
-      deviceId: ptzActiveDeviceId,
-      ranges: ptzRanges(),
-      current: ptzCurrent
-    }));
-  }
-
-  function ptzBroadcastState() {
-    if (!controlChannel || controlChannel.readyState !== 'open') return;
-    controlChannel.send(JSON.stringify({ type: 'ptz-state', deviceId: ptzActiveDeviceId, current: ptzCurrent }));
-  }
-
-  function ptzClampAxis(ax, val) {
-    if (!ptzTrackCaps || !ptzTrackCaps[ax]) return null;
-    let lo = ptzTrackCaps[ax].min, hi = ptzTrackCaps[ax].max;
-    if (ax === 'pan' || ax === 'tilt') { lo += PTZ_SOFT_MARGIN; hi -= PTZ_SOFT_MARGIN; }
-    return Math.max(lo, Math.min(hi, val));
-  }
-
-  function ptzRequestTarget(target) {
-    // Gym side: accept a target {pan?,tilt?,zoom?}, clamp to soft limits, and
-    // schedule a throttled apply. No-ops on a side without a PTZ camera.
-    if (!ptzTrackCaps) return;
-    const clamped = {};
-    ['pan', 'tilt', 'zoom'].forEach((ax) => {
-      if (typeof target[ax] === 'number') {
-        const c = ptzClampAxis(ax, target[ax]);
-        if (c !== null) clamped[ax] = c;
-      }
-    });
-    if (Object.keys(clamped).length === 0) return;
-    ptzPendingTarget = Object.assign({}, ptzPendingTarget || {}, clamped);
-    ptzScheduleApply();
-  }
-
-  function ptzScheduleApply() {
-    if (ptzApplyTimer || !ptzPendingTarget) return; // a tick is already queued; it takes the latest target
-    const wait = Math.max(0, PTZ_APPLY_THROTTLE_MS - (performance.now() - ptzLastApply));
-    ptzApplyTimer = setTimeout(async () => {
-      ptzApplyTimer = null;
-      const target = ptzPendingTarget; ptzPendingTarget = null;
-      if (!target || !localStream) return;
-      const track = localStream.getVideoTracks()[0];
-      if (!track) return;
-      const advanced = {};
-      ['pan', 'tilt', 'zoom'].forEach((ax) => { if (typeof target[ax] === 'number') advanced[ax] = target[ax]; });
-      try {
-        await track.applyConstraints({ advanced: [advanced] });
-        const s = track.getSettings ? track.getSettings() : {};
-        ['pan', 'tilt', 'zoom'].forEach((ax) => {
-          if (typeof s[ax] === 'number') ptzCurrent[ax] = s[ax];
-          else if (typeof advanced[ax] === 'number') ptzCurrent[ax] = advanced[ax];
-        });
-      } catch (e) {
-        // A rejected constraint must never break the call; just report last-known.
-      }
-      ptzLastApply = performance.now();
-      ptzBroadcastState();
-      if (ptzPendingTarget) ptzScheduleApply(); // more arrived while applying
-    }, wait);
-  }
-
-  // ---- TRAINER SIDE (the controller UI) --------------------------------
-  const ptzPanel = document.getElementById('ptzPanel');
-  const ptzReadout = document.getElementById('ptzReadout');
-  const ptzSaveRow = document.getElementById('ptzSaveRow');
-  const ptzInvTilt = document.getElementById('ptzInvTilt');
-  const ptzInvPan = document.getElementById('ptzInvPan');
-  const ptzStepFineBtn = document.getElementById('ptzStepFine');
-  const ptzStepCoarseBtn = document.getElementById('ptzStepCoarse');
-  const ptzCollapseBtn = document.getElementById('ptzCollapse');
-  const ptzDebugEl = document.getElementById('ptzDebug');
-
-  function ptzUpdateDebug() {
-    if (!ptzDebugEl) return;
-    const selfAxes = ptzTrackCaps ? ['pan', 'tilt', 'zoom'].filter((a) => a in ptzTrackCaps) : [];
-    const self = selfAxes.length ? selfAxes.join('/') : 'none';
-    const peerAxes = (ptzRemote.available && ptzRemote.ranges) ? Object.keys(ptzRemote.ranges).join('/') : '';
-    const peer = ptzRemote.available ? ('yes ' + peerAxes).trim() : 'no';
-    const panel = (ptzRemote.available && !ptzIHavePTZ) ? 'SHOWN' : 'hidden';
-    ptzDebugEl.textContent = `PTZ self: ${self}  |  peer: ${peer}  |  panel: ${panel}`;
-  }
-
-  let ptzRemote = { available: false, deviceId: null, ranges: null, current: { pan: 0, tilt: 0, zoom: 100 } };
-  let ptzTarget = { pan: 0, tilt: 0, zoom: 100 };
-  let ptzLastNudgeAt = 0;
-  let ptzStep = 'fine';
-
-  function ptzHandlePeerMessage(msg) {
-    if (msg.type === 'ptz-capability') {
-      ptzRemote = {
-        available: !!msg.available,
-        deviceId: msg.deviceId || null,
-        ranges: msg.ranges || null,
-        current: msg.current || { pan: 0, tilt: 0, zoom: 100 }
-      };
-      ptzTarget = Object.assign({}, ptzRemote.current);
-      ptzRenderPanel();
-    } else if (msg.type === 'ptz-state') {
-      if (msg.deviceId) ptzRemote.deviceId = msg.deviceId;
-      ptzRemote.current = msg.current || ptzRemote.current;
-      // Don't fight the trainer's own recent taps: only resync the target from
-      // the echoed position once things have settled for a moment.
-      if (performance.now() - ptzLastNudgeAt > 500) ptzTarget = Object.assign({}, ptzRemote.current);
-      ptzUpdateReadout();
-    }
-  }
-
-  const ptzDeg = (v) => (v / 3600).toFixed(0);   // UVC units → whole degrees
-  const ptzZoomX = (v) => (v / 100).toFixed(2);  // 100 → 1.00×
-
-  function ptzUpdateReadout() {
-    if (!ptzReadout) return;
-    const c = ptzRemote.current || {};
-    const parts = [];
-    if (typeof c.tilt === 'number') parts.push('tilt ' + ptzDeg(c.tilt) + '°');
-    if (typeof c.pan === 'number') parts.push('pan ' + ptzDeg(c.pan) + '°');
-    if (typeof c.zoom === 'number') parts.push('zoom ' + ptzZoomX(c.zoom) + '×');
-    ptzReadout.textContent = parts.join('   ');
-  }
-
-  function ptzRenderPanel() {
-    if (!ptzPanel) return;
-    ptzUpdateDebug(); // TRAINER PTZ CONTROL MODULE: keep the debug line current on every state change
-    const show = ptzRemote.available && !ptzIHavePTZ;
-    ptzPanel.hidden = !show;
-    if (!show) return;
-    ptzUpdateReadout();
-    const slots = ptzGetSlots();
-    document.querySelectorAll('.ptz-preset').forEach((b) => {
-      b.classList.toggle('saved', !!slots[b.dataset.slot]);
-    });
-  }
-
-  function ptzClampTarget(ax, val) {
-    const r = ptzRemote.ranges && ptzRemote.ranges[ax];
-    if (!r) return val;
-    return Math.max(r.min, Math.min(r.max, val));
-  }
-
-  function ptzSendCommand() {
-    if (!controlChannel || controlChannel.readyState !== 'open') return;
-    const out = { type: 'ptz-command' };
-    ['pan', 'tilt', 'zoom'].forEach((ax) => {
-      if (ptzRemote.ranges && ptzRemote.ranges[ax] && typeof ptzTarget[ax] === 'number') out[ax] = ptzTarget[ax];
-    });
-    controlChannel.send(JSON.stringify(out));
-  }
-
-  function ptzNudge(ax, dir) {
-    if (!ptzRemote.available || !ptzRemote.ranges || !ptzRemote.ranges[ax]) return;
-    ptzTarget[ax] = ptzClampTarget(ax, (ptzTarget[ax] || 0) + PTZ_STEP[ptzStep][ax] * dir);
-    ptzLastNudgeAt = performance.now();
-    ptzSendCommand();
-  }
-
-  function ptzGoto(pos) {
-    if (!ptzRemote.available) return;
-    ['pan', 'tilt', 'zoom'].forEach((ax) => { if (typeof pos[ax] === 'number') ptzTarget[ax] = ptzClampTarget(ax, pos[ax]); });
-    ptzLastNudgeAt = performance.now();
-    ptzSendCommand();
-  }
-
-  function ptzCenter() {
-    const z = (ptzRemote.ranges && ptzRemote.ranges.zoom) ? ptzRemote.ranges.zoom.min : 100;
-    ptzGoto({ pan: 0, tilt: 0, zoom: z });
-  }
-
-  // Presets are physical positions, so they're keyed per gym-camera deviceId —
-  // switching between GymE-1 and GymE-2 loads that camera's own saved spots.
-  function ptzLoadPresets() { try { return JSON.parse(localStorage.getItem(PTZ_LS_PRESETS) || '{}'); } catch { return {}; } }
-  function ptzGetSlots() { return ptzLoadPresets()[ptzRemote.deviceId || 'default'] || {}; }
-  function ptzSaveSlot(slot) {
-    const all = ptzLoadPresets();
-    const key = ptzRemote.deviceId || 'default';
-    all[key] = all[key] || {};
-    all[key][slot] = Object.assign({}, ptzRemote.current); // capture where the camera actually is now
-    localStorage.setItem(PTZ_LS_PRESETS, JSON.stringify(all));
-    ptzRenderPanel();
-  }
-  function ptzRecallSlot(slot) {
-    const pos = ptzGetSlots()[slot];
-    if (pos) ptzGoto(pos);
-  }
-
-  // Wire the controls once (the buttons exist from page load; actions no-op
-  // until a PTZ capability actually arrives).
-  (function ptzWire() {
-    const on = (id, fn) => { const el = document.getElementById(id); if (el) el.addEventListener('click', fn); };
-    on('ptzTiltUp',   () => ptzNudge('tilt', (ptzInvTilt && ptzInvTilt.checked) ? -1 : +1));
-    on('ptzTiltDown', () => ptzNudge('tilt', (ptzInvTilt && ptzInvTilt.checked) ? +1 : -1));
-    on('ptzPanLeft',  () => ptzNudge('pan',  (ptzInvPan && ptzInvPan.checked) ? +1 : -1));
-    on('ptzPanRight', () => ptzNudge('pan',  (ptzInvPan && ptzInvPan.checked) ? -1 : +1));
-    on('ptzZoomIn',   () => ptzNudge('zoom', +1));
-    on('ptzZoomOut',  () => ptzNudge('zoom', -1));
-    on('ptzCenterBtn', ptzCenter);
-    on('ptzStepFine',   () => { ptzStep = 'fine';   ptzStepFineBtn.classList.add('on');  ptzStepCoarseBtn.classList.remove('on'); });
-    on('ptzStepCoarse', () => { ptzStep = 'coarse'; ptzStepCoarseBtn.classList.add('on'); ptzStepFineBtn.classList.remove('on'); });
-    on('ptzSaveToggle', () => { if (ptzSaveRow) ptzSaveRow.hidden = !ptzSaveRow.hidden; });
-    on('ptzCollapse', () => {
-      ptzPanel.classList.toggle('collapsed');
-      ptzCollapseBtn.textContent = ptzPanel.classList.contains('collapsed') ? '+' : '–';
-    });
-    document.querySelectorAll('.ptz-preset').forEach((b) => b.addEventListener('click', () => ptzRecallSlot(b.dataset.slot)));
-    document.querySelectorAll('.ptz-save').forEach((b) => b.addEventListener('click', () => ptzSaveSlot(b.dataset.slot)));
-  })();
-
-  // NEXT VERSION (noted, not yet done): make Invert tilt / Invert pan
-  // per-camera, keyed to the active gym deviceId like presets already are, so
-  // GymE-1 and GymE-2 each remember their own direction instead of sharing one
-  // checkbox. The two ceiling cameras face opposite ways and may want opposite
-  // invert settings. When doing this, keep the button wiring above and the
-  // ptzKeyActions map below pointing at the same invert logic so arrows and the
-  // D-pad never disagree.
-
-  // ---- keyboard control (desktop trainer convenience) ------------------
-  // Arrow keys mirror the D-pad, +/- mirror zoom. They fire the exact same
-  // nudge path as the buttons — so they honour the Invert checkboxes and the
-  // Fine/Coarse step automatically — and only act while the trainer panel is
-  // actually showing, so they do nothing on the gym side. Holding a key runs
-  // a paced repeat (we ignore the OS's own key-repeat and run our own, capped
-  // so it can't outrun the gym-side motor throttle). Multiple keys can be held
-  // at once (e.g. Up+Right) for diagonal framing.
-  const PTZ_KEY_REPEAT_MS = 200;
-  const ptzKeyActions = {
-    tiltUp:   () => ptzNudge('tilt', (ptzInvTilt && ptzInvTilt.checked) ? -1 : +1),
-    tiltDown: () => ptzNudge('tilt', (ptzInvTilt && ptzInvTilt.checked) ? +1 : -1),
-    panLeft:  () => ptzNudge('pan',  (ptzInvPan && ptzInvPan.checked) ? +1 : -1),
-    panRight: () => ptzNudge('pan',  (ptzInvPan && ptzInvPan.checked) ? -1 : +1),
-    zoomIn:   () => ptzNudge('zoom', +1),
-    zoomOut:  () => ptzNudge('zoom', -1)
-  };
-  const ptzKeyIntervals = {};
-
-  function ptzKeyToAction(e) {
-    switch (e.key) {
-      case 'ArrowUp': return 'tiltUp';
-      case 'ArrowDown': return 'tiltDown';
-      case 'ArrowLeft': return 'panLeft';
-      case 'ArrowRight': return 'panRight';
-      case '+': case '=': return 'zoomIn';
-      case '-': case '_': return 'zoomOut';
-      default: return null;
-    }
-  }
-
-  function ptzStopAllKeys() {
-    Object.keys(ptzKeyIntervals).forEach((a) => { clearInterval(ptzKeyIntervals[a]); delete ptzKeyIntervals[a]; });
-  }
-
-  document.addEventListener('keydown', (e) => {
-    if (!ptzPanel || ptzPanel.hidden) return;          // not the trainer side / no panel
-    if (e.ctrlKey || e.altKey || e.metaKey) return;    // leave browser/OS shortcuts alone
-    const ae = document.activeElement;
-    if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.tagName === 'SELECT' || ae.isContentEditable)) return;
-    const action = ptzKeyToAction(e);
-    if (!action) return;
-    e.preventDefault();          // stop arrow-scroll / browser zoom
-    if (e.repeat) return;        // ignore the OS auto-repeat; our interval paces it
-    if (ptzKeyIntervals[action]) return;
-    ptzKeyActions[action]();     // one immediate step on press
-    ptzKeyIntervals[action] = setInterval(ptzKeyActions[action], PTZ_KEY_REPEAT_MS);
-  });
-
-  document.addEventListener('keyup', (e) => {
-    const action = ptzKeyToAction(e);
-    if (action && ptzKeyIntervals[action]) { clearInterval(ptzKeyIntervals[action]); delete ptzKeyIntervals[action]; }
-  });
-
-  // If the window loses focus mid-hold, keyup may never arrive — stop everything.
-  window.addEventListener('blur', ptzStopAllKeys);
-  // ===== TRAINER PTZ CONTROL MODULE: JS END ==============================
 
   // ===== DIAGNOSTICS MODULE START =====================================
   // Adds: (1) a live connection-stats feed + per-session history log,
@@ -1777,6 +1283,557 @@
     popoutBtn.addEventListener('click', () => { openSelfViewPopout(); });
   }
   // ===== SELF-VIEW POPOUT MODULE END =====================================
+
+  // ===== AUTO-FRAME MODULE: JS START =====================================
+  // Host-driven auto-framing, ported from the v13 bench
+  // (~/training-call/autoframe-test/index.html, 40852 bytes).
+  //
+  // Everything in this module is self-contained: it injects its own CSS and its
+  // own panel into document.body, and touches NO live-app markup. Deleting from
+  // the START banner to the END banner returns this file to the live app plus
+  // the three inline edits noted at the top of <head>.
+  //
+  // It does not hook startLocalStream(). Instead it OBSERVES localVideo.srcObject
+  // every animation frame and adopts whatever video track is currently live. That
+  // means camera switching keeps working exactly as it does in the live app
+  // (replaceTrack, call stays up) and this module simply follows along — no
+  // teardown, no dropped video for the trainer.
+  //
+  // Two deliberate changes from the bench, both deliberate, both explained below:
+  //   1. restoreInv() runs BEFORE the controls go live (the v13 ordering defect).
+  //   2. Detection reads a downscaled offscreen canvas, not the 1080p element.
+
+  const AF_LS_TUNE = 'afTune_v14';
+  const AF_LS_INV  = 'afInv_v14';
+  const AF_U = 3600;        // motor units per degree
+  const AF_MIN_CMD = 900;   // 0.25° — below this a command isn't worth a round trip
+  const AF_TORSO = [11, 12, 23, 24];
+
+  // v13 validated defaults, carried forward verbatim from the bench.
+  const AF_DEFAULTS = {
+    torso: 0.42, vDead: 0.06, hDead: 0.06, stepT: 6, stepP: 12,
+    tGain: 120000, pGain: 200000, rate: 300, smooth: 0.35, reacq: 0,
+    detHz: 6, panOn: true, invT: true, invP: true
+  };
+
+  let afPose = null, afPoseReady = false, afPoseError = null;
+  let afTrack = null, afCaps = null, afOpenDeviceId = null;
+  let afFraming = false;
+  let afLastVideoTime = -1, afLastDetect = 0, afLastCmd = 0;
+  let afCmdInFlight = false, afPumpAlt = 0;
+  let afWant = { tilt: null, pan: null };
+  let afCurTilt = 0, afCurPan = 0;
+  let afSmX = null, afSmY = null;
+  let afLostSince = 0, afRecentred = false;
+  let afPanelOpen = false;
+  let afLastResult = null;
+
+  const afT = Object.assign({}, AF_DEFAULTS);
+  const afM = {
+    frames: 0, fpsWin: 0, fpsAt: 0, vidFps: null,
+    detN: 0, detSum: 0, detMax: 0, detMean: null,
+    sup: { tilt: 0, pan: 0 }, clamp: { tilt: 0, pan: 0 },
+    peakT: 0, peakP: 0, errs: 0, lost: 0,
+    vis: null
+  };
+
+  // ---- panel -------------------------------------------------------------
+  const afStyle = document.createElement('style');
+  afStyle.textContent = `
+  #afToggle{position:fixed;right:10px;bottom:10px;z-index:99998;
+    background:rgba(20,22,26,.86);color:#dfe6ee;border:1px solid #3a4250;
+    border-radius:8px;padding:7px 11px;font:600 12px/1 system-ui,sans-serif;
+    cursor:pointer;backdrop-filter:blur(4px)}
+  #afToggle.live{border-color:#2e9e5b;color:#7fe0a3}
+  #afPanel{position:fixed;right:10px;bottom:50px;z-index:99999;width:310px;
+    max-height:78vh;overflow:auto;display:none;background:rgba(16,18,22,.95);
+    color:#dfe6ee;border:1px solid #3a4250;border-radius:10px;padding:10px;
+    font:12px/1.35 system-ui,sans-serif;backdrop-filter:blur(6px)}
+  #afPanel.open{display:block}
+  #afPanel h4{margin:0 0 6px;font-size:12px;letter-spacing:.04em;color:#9fb0c4;
+    text-transform:uppercase}
+  #afPanel .row{display:flex;justify-content:space-between;gap:6px;margin:3px 0}
+  #afPanel .row span:last-child{font-variant-numeric:tabular-nums;color:#fff}
+  #afPanel button{width:100%;margin:4px 0;padding:7px;border-radius:7px;
+    border:1px solid #3a4250;background:#222833;color:#dfe6ee;font-weight:600;
+    cursor:pointer}
+  #afPanel button.go{background:#1d6b3f;border-color:#2e9e5b;color:#dff5e7}
+  #afPanel button:disabled{opacity:.45;cursor:default}
+  #afPanel label{display:flex;align-items:center;gap:6px;margin:3px 0}
+  #afPanel input[type=range]{width:100%}
+  #afPrev{width:100%;border-radius:6px;background:#000;display:block;margin:6px 0}
+  #afLog{max-height:110px;overflow:auto;font:11px/1.3 ui-monospace,monospace;
+    background:#0c0e12;border-radius:6px;padding:5px;margin-top:6px}
+  #afLog div{white-space:pre-wrap}
+  .af-warn{color:#e8c46a}.af-err{color:#ef8080}.af-ok{color:#7fe0a3}
+  #afPanel hr{border:0;border-top:1px solid #2b313c;margin:8px 0}
+  #afPanel .sl{margin:5px 0}
+  #afPanel .sl b{font-weight:600;color:#9fb0c4}
+  `;
+  document.head.appendChild(afStyle);
+
+  const afToggle = document.createElement('button');
+  afToggle.id = 'afToggle';
+  afToggle.textContent = 'Auto-Frame';
+  document.body.appendChild(afToggle);
+
+  const afPanel = document.createElement('div');
+  afPanel.id = 'afPanel';
+  const afSlider = (id, label, min, max, step, val) =>
+    `<div class="sl"><b>${label}</b> <span id="af_${id}V">${val}</span>
+     <input type="range" id="af_${id}" min="${min}" max="${max}" step="${step}" value="${val}"></div>`;
+  afPanel.innerHTML = `
+    <h4>Auto-Frame</h4>
+    <div class="row"><span>Model</span><span id="afPoseState">loading…</span></div>
+    <div class="row"><span>Camera</span><span id="afDev">—</span></div>
+    <div class="row"><span>PTZ</span><span id="afPtz">—</span></div>
+    <button id="afGo" class="go" disabled>▶ Start auto-framing</button>
+    <button id="afCenter">Centre both axes</button>
+    <canvas id="afPrev" width="300" height="169"></canvas>
+    <div class="row"><span>Video</span><span id="afFps">—</span></div>
+    <div class="row"><span>Detect</span><span id="afDet">—</span></div>
+    <div class="row"><span>Position</span><span id="afPos">—</span></div>
+    <div class="row"><span>Slew peak</span><span id="afSlew">—</span></div>
+    <div class="row"><span>Torso vis</span><span id="afVis">—</span></div>
+    <div class="row"><span>Lost / sup / clamp</span><span id="afCounts">—</span></div>
+    <hr>
+    <label><input type="checkbox" id="af_invT"> Invert tilt</label>
+    <label><input type="checkbox" id="af_invP"> Invert pan</label>
+    <label><input type="checkbox" id="af_panOn"> Pan enabled</label>
+    <span id="afInvSaved" class="af-warn"></span>
+    <hr>
+    ${afSlider('torso', 'Torso vertical target', 0.30, 0.55, 0.01, AF_DEFAULTS.torso)}
+    ${afSlider('vDead', 'Tilt deadzone', 0.02, 0.20, 0.01, AF_DEFAULTS.vDead)}
+    ${afSlider('hDead', 'Pan deadzone', 0.02, 0.20, 0.01, AF_DEFAULTS.hDead)}
+    ${afSlider('stepT', 'Tilt step °', 1, 20, 1, AF_DEFAULTS.stepT)}
+    ${afSlider('stepP', 'Pan step °', 1, 30, 1, AF_DEFAULTS.stepP)}
+    ${afSlider('tGain', 'Tilt gain', 20000, 400000, 10000, AF_DEFAULTS.tGain)}
+    ${afSlider('pGain', 'Pan gain', 20000, 500000, 10000, AF_DEFAULTS.pGain)}
+    ${afSlider('rate', 'Command rate ms', 100, 1000, 50, AF_DEFAULTS.rate)}
+    ${afSlider('smooth', 'Smoothing', 0.05, 1.0, 0.05, AF_DEFAULTS.smooth)}
+    ${afSlider('reacq', 'Recentre after s (0=never)', 0, 15, 1, AF_DEFAULTS.reacq)}
+    ${afSlider('detHz', 'Detect rate Hz', 4, 30, 1, AF_DEFAULTS.detHz)}
+    <div id="afLog"></div>
+  `;
+  document.body.appendChild(afPanel);
+
+  const afQ = (id) => document.getElementById(id);
+  const afPrev = afQ('afPrev'), afPrevCtx = afPrev.getContext('2d');
+
+  function afLog(m, c) {
+    const d = document.createElement('div');
+    if (c) d.className = c;
+    d.textContent = new Date().toLocaleTimeString() + '  ' + m;
+    const box = afQ('afLog');
+    box.appendChild(d);
+    while (box.childNodes.length > 200) box.removeChild(box.firstChild);
+    box.scrollTop = box.scrollHeight;
+  }
+
+  afToggle.addEventListener('click', () => {
+    afPanelOpen = !afPanelOpen;
+    afPanel.classList.toggle('open', afPanelOpen);
+  });
+
+  // ---- tuning persistence ------------------------------------------------
+  const AF_SLIDERS = ['torso','vDead','hDead','stepT','stepP','tGain','pGain','rate','smooth','reacq','detHz'];
+  function afReadTune() {
+    AF_SLIDERS.forEach((k) => { afT[k] = +afQ('af_' + k).value; });
+    afT.panOn = afQ('af_panOn').checked;
+    afT.invT  = afQ('af_invT').checked;
+    afT.invP  = afQ('af_invP').checked;
+  }
+  function afSaveTune() {
+    try {
+      const o = {};
+      AF_SLIDERS.forEach((k) => { o[k] = afQ('af_' + k).value; });
+      o.panOn = afQ('af_panOn').checked;
+      localStorage.setItem(AF_LS_TUNE, JSON.stringify(o));
+    } catch (e) {}
+  }
+  function afLoadTune() {
+    try {
+      const o = JSON.parse(localStorage.getItem(AF_LS_TUNE) || 'null');
+      if (!o) return false;
+      AF_SLIDERS.forEach((k) => {
+        if (o[k] != null) { afQ('af_' + k).value = o[k]; afQ('af_' + k + 'V').textContent = o[k]; }
+      });
+      if (o.panOn != null) afQ('af_panOn').checked = o.panOn;
+      return true;
+    } catch (e) { return false; }
+  }
+  AF_SLIDERS.forEach((k) => {
+    afQ('af_' + k).addEventListener('input', () => {
+      afQ('af_' + k + 'V').textContent = afQ('af_' + k).value;
+      afReadTune(); afSaveTune();
+    });
+  });
+  afQ('af_panOn').addEventListener('change', () => { afReadTune(); afSaveTune(); });
+
+  // ---- per-camera invert persistence -------------------------------------
+  function afInvStore() {
+    try { return JSON.parse(localStorage.getItem(AF_LS_INV) || '{}'); } catch (e) { return {}; }
+  }
+  function afSaveInv() {
+    if (!afOpenDeviceId) return;
+    try {
+      const s = afInvStore();
+      s[afOpenDeviceId] = { t: afQ('af_invT').checked, p: afQ('af_invP').checked };
+      localStorage.setItem(AF_LS_INV, JSON.stringify(s));
+      afQ('afInvSaved').textContent = 'saved for ' + afOpenDeviceId.slice(0, 8);
+      afQ('afInvSaved').className = 'af-ok';
+    } catch (e) {}
+  }
+  // ORDERING FIX (v13 defect): this runs while the controls are still disabled,
+  // BEFORE the user can touch a checkbox. In v13 it ran at the end of
+  // startStream(), so a hand-set pair was silently overwritten on every open —
+  // four combinations were set and one combination was tested, four times.
+  function afRestoreInv() {
+    afQ('afInvSaved').textContent = '';
+    if (!afOpenDeviceId) return;
+    const s = afInvStore()[afOpenDeviceId];
+    if (!s) {
+      afQ('afInvSaved').textContent = 'no saved inverts for ' + afOpenDeviceId.slice(0, 8);
+      afQ('afInvSaved').className = 'af-warn';
+      afLog('No saved inverts for ' + afOpenDeviceId.slice(0, 8) + ' — set them by hand; they persist from here.', 'af-warn');
+      return;
+    }
+    afQ('af_invT').checked = !!s.t;
+    afQ('af_invP').checked = !!s.p;
+    afReadTune();
+    afQ('afInvSaved').textContent = 'restored for ' + afOpenDeviceId.slice(0, 8);
+    afQ('afInvSaved').className = 'af-ok';
+    afLog('Inverts restored for ' + afOpenDeviceId.slice(0, 8) + ': tilt ' + (s.t ? 'ON' : 'OFF') + ', pan ' + (s.p ? 'ON' : 'OFF') + '.', 'af-ok');
+  }
+  ['af_invT', 'af_invP'].forEach((id) => {
+    afQ(id).addEventListener('change', () => { afReadTune(); afSaveInv(); });
+  });
+
+  // ---- pose model (dynamic import: a CDN failure must not kill the call) ---
+  (async function afInitPose() {
+    try {
+      const vision = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14');
+      const fileset = await vision.FilesetResolver.forVisionTasks(
+        'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm');
+      const make = (delegate) => vision.PoseLandmarker.createFromOptions(fileset, {
+        baseOptions: {
+          modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task',
+          delegate
+        },
+        runningMode: 'VIDEO', numPoses: 1,
+        minPoseDetectionConfidence: 0.5, minTrackingConfidence: 0.5
+      });
+      try {
+        afPose = await make('GPU');
+        afQ('afPoseState').textContent = 'ready (GPU)';
+        afLog('Pose model ready (GPU).', 'af-ok');
+      } catch (e) {
+        afLog('GPU delegate failed, falling back to CPU…', 'af-warn');
+        afPose = await make('CPU');
+        afQ('afPoseState').textContent = 'ready (CPU)';
+        afLog('Pose model ready (CPU).', 'af-warn');
+      }
+      afPoseReady = true;
+      if (afTrack && afCaps && afCaps.tilt) afQ('afGo').disabled = false;
+    } catch (err) {
+      afPoseError = err;
+      afQ('afPoseState').textContent = 'FAILED';
+      afLog('Pose model failed to load: ' + err.message + ' — the call is unaffected; auto-framing is unavailable.', 'af-err');
+    }
+  })();
+
+  // ---- motor command queue (ported from v13) -----------------------------
+  function afClamp(axis, v) {
+    const c = afCaps[axis];
+    return Math.max(c.min, Math.min(c.max, Math.round(v)));
+  }
+  function afQueue(axis, val) {
+    if (afWant[axis] !== null) afM.sup[axis]++;
+    afWant[axis] = val;
+    afPump();
+  }
+  async function afPump() {
+    if (afCmdInFlight || !afTrack) return;
+    const order = afPumpAlt ? ['pan', 'tilt'] : ['tilt', 'pan'];
+    let axis = null;
+    for (const a of order) { if (afWant[a] !== null) { axis = a; break; } }
+    if (axis === null) return;
+    afPumpAlt ^= 1;
+    const val = afWant[axis];
+    afWant[axis] = null;
+    const before = (axis === 'tilt') ? afCurTilt : afCurPan;
+    afCmdInFlight = true;
+    try {
+      await afTrack.applyConstraints({ advanced: [{ [axis]: val }] });
+      const s = afTrack.getSettings ? afTrack.getSettings() : {};
+      const rep = (typeof s[axis] === 'number') ? s[axis] : val;
+      if (Math.abs(rep - val) > AF_U / 2) {
+        afM.clamp[axis]++;
+        if (afM.clamp[axis] === 1 || afM.clamp[axis] % 20 === 0) {
+          afLog(axis + ' clamped at limit (asked ' + (val / AF_U).toFixed(0) + '°, got ' + (rep / AF_U).toFixed(0) + '°).', 'af-warn');
+        }
+      }
+      const moved = Math.abs(rep - before) / AF_U;
+      if (axis === 'tilt') { afCurTilt = rep; if (moved > afM.peakT) afM.peakT = moved; }
+      else { afCurPan = rep; if (moved > afM.peakP) afM.peakP = moved; }
+    } catch (e) {
+      afM.errs++;
+      afLog('applyConstraints: ' + e.message, 'af-err');
+    } finally {
+      afCmdInFlight = false;
+    }
+    afPump();
+  }
+  function afCenterBoth() {
+    if (!afTrack || !afCaps) return;
+    if (afCaps.tilt) afQueue('tilt', afClamp('tilt', 0));
+    if (afCaps.pan) afQueue('pan', afClamp('pan', 0));
+    afSmX = afSmY = null;
+  }
+  afQ('afCenter').addEventListener('click', () => { afCenterBoth(); afLog('Centred.'); });
+
+  afQ('afGo').addEventListener('click', () => {
+    if (!afTrack) { afLog('No camera track yet.', 'af-warn'); return; }
+    afFraming = !afFraming;
+    afQ('afGo').textContent = afFraming ? '⏸ Stop auto-framing' : '▶ Start auto-framing';
+    afQ('afGo').className = afFraming ? '' : 'go';
+    afToggle.classList.toggle('live', afFraming);
+    afToggle.textContent = afFraming ? 'Auto-Frame ●' : 'Auto-Frame';
+    afSmX = afSmY = null; afLostSince = 0; afRecentred = false;
+    afLog(afFraming ? 'Auto-framing ON.' : 'Auto-framing OFF.', afFraming ? 'af-ok' : 'af-warn');
+  });
+
+  // ---- track adoption ----------------------------------------------------
+  async function afAdoptTrack(t) {
+    afTrack = t;
+    afCaps = null; afOpenDeviceId = null;
+    afWant = { tilt: null, pan: null };
+    afCmdInFlight = false;
+    afSmX = afSmY = null; afLostSince = 0; afRecentred = false;
+    if (afFraming) {
+      afFraming = false;
+      afQ('afGo').textContent = '▶ Start auto-framing';
+      afQ('afGo').className = 'go';
+      afToggle.classList.remove('live');
+      afToggle.textContent = 'Auto-Frame';
+      afLog('Camera changed — auto-framing stopped. Confirm inverts, then restart it.', 'af-warn');
+    }
+    afQ('afGo').disabled = true;
+    if (!t) { afQ('afDev').textContent = '—'; afQ('afPtz').textContent = '—'; return; }
+
+    const st = t.getSettings ? t.getSettings() : {};
+    afOpenDeviceId = st.deviceId || null;
+    afCaps = t.getCapabilities ? t.getCapabilities() : {};
+    afCurTilt = (typeof st.tilt === 'number') ? st.tilt : 0;
+    afCurPan = (typeof st.pan === 'number') ? st.pan : 0;
+    afM.sup = { tilt: 0, pan: 0 }; afM.clamp = { tilt: 0, pan: 0 };
+    afM.peakT = 0; afM.peakP = 0; afM.detMax = 0; afM.detN = 0; afM.detSum = 0;
+
+    afQ('afDev').textContent = afOpenDeviceId ? afOpenDeviceId.slice(0, 8) : '(no id)';
+    const hasT = afCaps && afCaps.tilt && typeof afCaps.tilt.max === 'number';
+    const hasP = afCaps && afCaps.pan && typeof afCaps.pan.max === 'number';
+    afQ('afPtz').textContent = (hasT ? 'tilt ' : '') + (hasP ? 'pan ' : '') + (afCaps.zoom ? 'zoom' : '') || 'none';
+
+    // Restore BEFORE the controls become usable — see afRestoreInv().
+    afRestoreInv();
+
+    // Widest zoom on open: a wider frame is fewer losses (v14 item 3).
+    if (afCaps.zoom && typeof afCaps.zoom.min === 'number') {
+      try {
+        await t.applyConstraints({ advanced: [{ zoom: afCaps.zoom.min }] });
+        afLog('Zoom set to widest (' + afCaps.zoom.min + ').');
+      } catch (e) { afLog('Zoom set failed: ' + e.message, 'af-warn'); }
+    } else {
+      afLog('No zoom capability reported on this unit.', 'af-warn');
+    }
+
+    if (hasT) {
+      if (afPoseReady) afQ('afGo').disabled = false;
+      afLog('Camera ' + (afOpenDeviceId || '').slice(0, 8) + ' adopted. Tilt/pan available.', 'af-ok');
+    } else {
+      afLog('This camera exposes no tilt — pick a PIXY in the camera list.', 'af-err');
+    }
+  }
+
+  // ---- pose helpers ------------------------------------------------------
+  function afAvg(lms, idx, key) {
+    let s = 0, n = 0;
+    idx.forEach((i) => {
+      const p = lms[i];
+      if (p && (p.visibility == null || p.visibility > 0.4)) { s += p[key]; n++; }
+    });
+    return n ? s / n : null;
+  }
+  const afEma = (prev, val, a) => (prev === null ? val : prev + a * (val - prev));
+  function afVisStats(lms) {
+    let s = 0, n = 0, mn = 1;
+    for (const i of AF_TORSO) {
+      const p = lms[i];
+      if (!p) continue;
+      const v = (p.visibility == null) ? 1 : p.visibility;
+      s += v; n++; if (v < mn) mn = v;
+    }
+    return n ? { mean: s / n, min: mn } : null;
+  }
+
+  // ---- drive (ported from v13 maybeDrive) --------------------------------
+  function afMaybeDrive(result) {
+    const now = performance.now();
+    const lms = result && result.landmarks && result.landmarks[0];
+
+    if (!lms) {
+      if (afLostSince === 0) { afLostSince = now; return; }
+      if (afT.reacq > 0 && !afRecentred && now - afLostSince > afT.reacq * 1000) {
+        afRecentred = true; afM.lost++;
+        afLog('Lost for ' + afT.reacq + 's — recentring (loss #' + afM.lost + ').', 'af-warn');
+        afCenterBoth();
+      }
+      return;
+    }
+    afLostSince = 0; afRecentred = false;
+
+    if (now - afLastCmd < afT.rate) return;
+    const cX = afAvg(lms, AF_TORSO, 'x'), cY = afAvg(lms, AF_TORSO, 'y');
+    if (cX === null || cY === null) return;
+    afSmX = afEma(afSmX, cX, afT.smooth);
+    afSmY = afEma(afSmY, cY, afT.smooth);
+    afLastCmd = now;
+
+    if (afCaps.tilt) {
+      const errY = afSmY - afT.torso;
+      const mag = Math.abs(errY) - afT.vDead;
+      if (mag > 0) {
+        let d = -Math.sign(errY) * mag * afT.tGain;
+        if (afT.invT) d = -d;
+        const stepU = afT.stepT * AF_U;
+        d = Math.max(-stepU, Math.min(stepU, d));
+        if (Math.abs(d) >= AF_MIN_CMD) afQueue('tilt', afClamp('tilt', afCurTilt + d));
+      }
+    }
+    if (afT.panOn && afCaps.pan) {
+      const errX = afSmX - 0.5;
+      const mag = Math.abs(errX) - afT.hDead;
+      if (mag > 0) {
+        let d = Math.sign(errX) * mag * afT.pGain;
+        if (afT.invP) d = -d;
+        const stepU = afT.stepP * AF_U;
+        d = Math.max(-stepU, Math.min(stepU, d));
+        if (Math.abs(d) >= AF_MIN_CMD) afQueue('pan', afClamp('pan', afCurPan + d));
+      }
+    }
+  }
+
+  // ---- render (panel only — hidden panel costs nothing) -------------------
+  function afRender(result) {
+    if (!afPanelOpen) return;
+    const el = localVideo;
+    if (!el || !el.videoWidth) return;
+    const w = afPrev.width;
+    const h = Math.round(w * el.videoHeight / el.videoWidth);
+    if (afPrev.height !== h) afPrev.height = h;
+    afPrevCtx.drawImage(el, 0, 0, w, h);
+    const lms = result && result.landmarks && result.landmarks[0];
+    if (!lms) return;
+    afPrevCtx.fillStyle = '#7fe0a3';
+    AF_TORSO.forEach((i) => {
+      const p = lms[i];
+      if (!p) return;
+      afPrevCtx.beginPath();
+      afPrevCtx.arc(p.x * w, p.y * h, 3, 0, 6.2832);
+      afPrevCtx.fill();
+    });
+    if (afSmX !== null && afSmY !== null) {
+      const x = afSmX * w, y = afSmY * h;
+      afPrevCtx.strokeStyle = '#4aa3ff';
+      afPrevCtx.lineWidth = 1.5;
+      afPrevCtx.beginPath();
+      afPrevCtx.moveTo(x - 9, y); afPrevCtx.lineTo(x + 9, y);
+      afPrevCtx.moveTo(x, y - 9); afPrevCtx.lineTo(x, y + 9);
+      afPrevCtx.stroke();
+    }
+    afPrevCtx.strokeStyle = 'rgba(255,255,255,.35)';
+    afPrevCtx.lineWidth = 1;
+    afPrevCtx.beginPath();
+    afPrevCtx.moveTo(0, afT.torso * h); afPrevCtx.lineTo(w, afT.torso * h);
+    afPrevCtx.stroke();
+  }
+
+  function afPaint() {
+    if (!afPanelOpen) return;
+    const f = (v, d) => (v == null ? '—' : v.toFixed(d));
+    afQ('afFps').textContent = afM.vidFps == null ? '—' : afM.vidFps.toFixed(1) + ' /s';
+    afQ('afDet').textContent = afM.detMean == null ? '—'
+      : f(afM.detMean, 1) + ' ms (max ' + f(afM.detMax, 0) + ')';
+    afQ('afPos').textContent = 'T ' + (afCurTilt / AF_U).toFixed(0) + '° · P ' + (afCurPan / AF_U).toFixed(0) + '°';
+    afQ('afSlew').textContent = 'T ' + f(afM.peakT, 0) + ' · P ' + f(afM.peakP, 0);
+    afQ('afVis').textContent = afM.vis ? f(afM.vis.mean, 3) + ' / ' + f(afM.vis.min, 3) : '—';
+    afQ('afCounts').textContent = afM.lost + ' / ' + (afM.sup.tilt + afM.sup.pan) + ' / ' + (afM.clamp.tilt + afM.clamp.pan);
+  }
+
+  // ---- main loop ---------------------------------------------------------
+  // Detection reads a DOWNSCALED offscreen canvas, not the 1080p element the
+  // bench used at 720p. MediaPipe resizes to 256x256 internally, so this costs
+  // nothing in accuracy and removes a 2.25x per-frame texture upload — the
+  // single biggest difference between bench conditions and a live 1080p call.
+  const afDet = document.createElement('canvas');
+  const afDetCtx = afDet.getContext('2d', { willReadFrequently: false });
+  const AF_DET_W = 480;
+
+  function afLoop() {
+    requestAnimationFrame(afLoop);
+    const el = localVideo;
+    if (!el) return;
+
+    const s = el.srcObject;
+    const t = (s && s.getVideoTracks) ? (s.getVideoTracks()[0] || null) : null;
+    if (t !== afTrack) { afAdoptTrack(t); return; }
+    if (!afTrack || el.readyState < 2 || !el.videoWidth) return;
+    if (el.currentTime === afLastVideoTime) return;
+    afLastVideoTime = el.currentTime;
+
+    const now = performance.now();
+    afM.fpsWin++;
+    if (now - afM.fpsAt >= 1000) {
+      afM.vidFps = afM.fpsWin * 1000 / (now - afM.fpsAt);
+      afM.fpsWin = 0; afM.fpsAt = now;
+      afPaint();
+    }
+
+    if (!afPoseReady) return;
+    const interval = 1000 / Math.max(1, afT.detHz);
+    if (now - afLastDetect < interval) return;
+    afLastDetect = now;
+
+    const w = AF_DET_W;
+    const h = Math.round(w * el.videoHeight / el.videoWidth);
+    if (afDet.width !== w || afDet.height !== h) { afDet.width = w; afDet.height = h; }
+    afDetCtx.drawImage(el, 0, 0, w, h);
+
+    let result = null;
+    const t0 = performance.now();
+    try { result = afPose.detectForVideo(afDet, t0); } catch (e) { afM.errs++; }
+    const dt = performance.now() - t0;
+    afM.detN++; afM.detSum += dt;
+    if (dt > afM.detMax) afM.detMax = dt;
+    afM.detMean = afM.detSum / afM.detN;
+    if (afM.detN > 200) { afM.detSum = afM.detMean * 50; afM.detN = 50; }
+
+    const lms = result && result.landmarks && result.landmarks[0];
+    if (lms) afM.vis = afVisStats(lms);
+    afLastResult = result;
+
+    afRender(result);
+    if (afFraming) afMaybeDrive(result);
+  }
+
+  // ---- boot --------------------------------------------------------------
+  if (afLoadTune()) afLog('Tuning restored.', 'af-ok');
+  afReadTune();
+  afLog('Auto-frame module loaded (v14 merge).', 'af-ok');
+  afLog('Inverts are stored per deviceId PER ORIGIN — nothing carries over from the bench on localhost:8090. Expect to set them once here.', 'af-warn');
+  requestAnimationFrame(afLoop);
+  // ===== AUTO-FRAME MODULE: JS END =======================================
+
 
   init();
 })();

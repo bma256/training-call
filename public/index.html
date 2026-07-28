@@ -1357,13 +1357,14 @@
   const AF_LS_TUNE = 'afTune_v14';
   const AF_LS_INV  = 'afInv_v14';
   const AF_U = 3600;        // motor units per degree
-  const AF_MIN_CMD = 900;   // 0.25° — below this a command isn't worth a round trip
+  const AF_MIN_CMD = 900;
+  const AF_VIS_MIN = 0.5;   // 0.25° — below this a command isn't worth a round trip
   const AF_TORSO = [11, 12, 23, 24];
 
   // v13 validated defaults, carried forward verbatim from the bench.
   const AF_DEFAULTS = {
     torso: 0.42, vDead: 0.06, hDead: 0.06, stepT: 6, stepP: 12,
-    tGain: 120000, pGain: 200000, rate: 300, smooth: 0.35, reacq: 0,
+    tGain: 120000, pGain: 200000, rate: 300, smooth: 0.35, reacq: 3,
     detHz: 6, panOn: true, invT: true, invP: true
   };
 
@@ -1549,6 +1550,7 @@
     if (AF_FORCE_INV) {
       afQ('af_invT').checked = AF_FORCE_INV.t;
       afQ('af_invP').checked = AF_FORCE_INV.p;
+      afQ('af_panOn').checked = true;
       afReadTune();
       afQ('afInvSaved').textContent = 'forced (inv=door): tilt ' + (AF_FORCE_INV.t ? 'ON' : 'OFF') + '/pan ' + (AF_FORCE_INV.p ? 'ON' : 'OFF');
       afQ('afInvSaved').className = 'af-ok';
@@ -1766,6 +1768,8 @@
     }
     afLostSince = 0; afRecentred = false;
 
+    var afVS=afVisStats(lms);
+    if(!afVS||afVS.min<AF_VIS_MIN){if(afLostSince===0){afLostSince=now;}return;}
     if (now - afLastCmd < afT.rate) return;
     const cX = afAvg(lms, AF_TORSO, 'x'), cY = afAvg(lms, AF_TORSO, 'y');
     if (cX === null || cY === null) return;

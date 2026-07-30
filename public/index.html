@@ -292,16 +292,46 @@
   const params = new URLSearchParams(location.search);
   const room = params.get('room') || 'gym';
 
-  // FAMILY-FOOLPROOF BRIDGE — Guarantee A. The native launcher, having resolved
-  // the door camera by its stable USB serial at the OS layer, appends inv=door.
-  // When present, the door's known-good pair (tilt ON, pan ON) is applied
-  // authoritatively on every camera open with ZERO deviceId dependence, and the
-  // per-deviceId localStorage lookup is skipped entirely — so a stale or missing
-  // saved pair (the cause of the failed Maria session) can never drive the motor
-  // the wrong way. Param absent → the page behaves exactly as the base build.
-  const AF_FORCE_INV = ({ door: { t: true, p: true } })[params.get('inv')] || null;
-  console.log('[build] index-autoframe-family Guarantee-A 2026-07-26 — inv=' +
-    (params.get('inv') || '(none)') + (AF_FORCE_INV ? ' (forcing tilt ON, pan ON)' : ''));
+  // FAMILY-FOOLPROOF BRIDGE — Guarantee A (PER-CAMERA, 2026-07-30). The native
+  // launcher resolves cameras by stable USB serial at the OS layer and appends
+  // inv=door. Two PIXYs need DIFFERENT inverts: the door (GymE-2) is tilt ON /
+  // pan ON, the rack (GymE-1) is tilt ON / pan OFF (measured — the rack genuinely
+  // differs on pan). The browser cannot see serials (both labels are the identical
+  // "EMEET PIXY: EMEET PIXY"), so the only page-visible discriminator is deviceId,
+  // which is stable WITHIN a session but can shuffle across replug. We therefore
+  // hold a baked-in deviceId→pair map (from the live enumeration on this box) and
+  // apply each camera's correct pair on adoption with zero hand-setting. A deviceId
+  // NOT in the map (e.g. after a replug shuffled it, or a third camera) is treated
+  // as UNRECOGNISED: pan is forced OFF (the non-runaway direction) and auto-framing
+  // is HELD until a human confirms inverts — an unknown camera can never run away.
+  // The per-deviceId localStorage lookup is still skipped in forced mode. Param
+  // absent → the page behaves exactly as the base build.
+  //
+  // MAINTENANCE: if these deviceIds ever shuffle (replug across sessions), re-run
+  // the enumeration probe on the live page and update AF_FORCE_MAP below. Door and
+  // rack are distinguished ONLY by these ids here; confirm identity by lens-cover
+  // test, never by picker order.
+  const AF_FORCE_MAP = (params.get('inv') === 'door') ? {
+    // deviceId (full) : { t: invertTilt, p: invertPan, role: label }
+    // deviceId is stable across clean launches through the persistent dualcam/
+    // family profile on the onrender.com origin (verified 2026-07-30 by lens-cover
+    // test across multiple fresh launches: 042f35f6 = door, b59a1c24 = rack). It is
+    // NOT stable if the browser navigates across origins in one window or runs on a
+    // throwaway profile — but production always launches clean to onrender, so these
+    // ids hold. Identity confirmed by lens-cover test, never by picker order. If a
+    // deviceId ever falls through to UNRECOGNISED, re-enumerate on a clean launch
+    // and update these entries.
+    '042f35f683f16c69317786b094bfd99e1316f7b25336e353923d08c7c1481ff6':
+      { t: true,  p: true,  role: 'door' },
+    'b59a1c246aa9e8b80693dab6bf6e44b04bc7593bff455bfb0d8c763f276d945e':
+      { t: true,  p: false, role: 'rack' }
+  } : null;
+  // Fallback pair for a camera whose deviceId is not in the map. pan:false so an
+  // unrecognised camera cannot run away on pan; auto-framing is separately held.
+  const AF_FORCE_FALLBACK = { t: true, p: false };
+  let afInvUnconfirmed = false;  // set true when an unrecognised camera is adopted
+  console.log('[build] index-autoframe-family Guarantee-A-permap 2026-07-30 — inv=' +
+    (params.get('inv') || '(none)') + (AF_FORCE_MAP ? ' (per-camera map active: door/rack)' : ''));
 
   // Google's public STUN servers — free, no signup, fine for most home networks.
   // ICE tries these (and any direct path) first; they're enough for wifi-to-wifi calls.
@@ -1543,18 +1573,36 @@
   function afRestoreInv() {
     afQ('afInvSaved').textContent = '';
 
-    // Guarantee A, step 1 — a launcher-forced pair (inv=door) is authoritative.
-    // Checked BEFORE the deviceId guard so it applies with zero deviceId
-    // dependence, overrides both the saved pair and the HTML default, and is
-    // re-asserted on every open. localStorage is skipped entirely in this mode.
-    if (AF_FORCE_INV) {
-      afQ('af_invT').checked = AF_FORCE_INV.t;
-      afQ('af_invP').checked = AF_FORCE_INV.p;
-      afQ('af_panOn').checked = true;
-      afReadTune();
-      afQ('afInvSaved').textContent = 'forced (inv=door): tilt ' + (AF_FORCE_INV.t ? 'ON' : 'OFF') + '/pan ' + (AF_FORCE_INV.p ? 'ON' : 'OFF');
-      afQ('afInvSaved').className = 'af-ok';
-      afLog('Inverts forced by launcher (inv=door): tilt ' + (AF_FORCE_INV.t ? 'ON' : 'OFF') + ', pan ' + (AF_FORCE_INV.p ? 'ON' : 'OFF') + ' — localStorage skipped.', 'af-ok');
+    // Guarantee A, step 1 (PER-CAMERA) — a launcher-forced map (inv=door) is
+    // authoritative. afOpenDeviceId is set by the caller (startStream) BEFORE this
+    // runs, so the current camera's deviceId is available for lookup here. The map
+    // applies each camera's correct pair with zero hand-setting; localStorage is
+    // skipped entirely in forced mode. An unrecognised deviceId fails SAFE.
+    if (AF_FORCE_MAP) {
+      afInvUnconfirmed = false;
+      const hit = AF_FORCE_MAP[afOpenDeviceId];
+      if (hit) {
+        afQ('af_invT').checked = hit.t;
+        afQ('af_invP').checked = hit.p;
+        afQ('af_panOn').checked = true;
+        afReadTune();
+        afQ('afInvSaved').textContent = 'forced (' + hit.role + '): tilt ' + (hit.t ? 'ON' : 'OFF') + '/pan ' + (hit.p ? 'ON' : 'OFF');
+        afQ('afInvSaved').className = 'af-ok';
+        afLog('Inverts forced per-camera (' + hit.role + ', ' + (afOpenDeviceId || '').slice(0, 8) + '): tilt ' + (hit.t ? 'ON' : 'OFF') + ', pan ' + (hit.p ? 'ON' : 'OFF') + ' — localStorage skipped.', 'af-ok');
+      } else {
+        // UNRECOGNISED camera — deviceId not in the baked map (replug shuffle or a
+        // third camera). Force pan OFF (non-runaway) and HOLD auto-framing until a
+        // human confirms inverts. The caller checks afInvUnconfirmed before enabling
+        // the Go button, so this camera physically cannot auto-frame unconfirmed.
+        afInvUnconfirmed = true;
+        afQ('af_invT').checked = AF_FORCE_FALLBACK.t;
+        afQ('af_invP').checked = AF_FORCE_FALLBACK.p;
+        afQ('af_panOn').checked = true;
+        afReadTune();
+        afQ('afInvSaved').textContent = 'UNRECOGNISED cam ' + (afOpenDeviceId || '').slice(0, 8) + ' — auto-framing HELD; confirm inverts';
+        afQ('afInvSaved').className = 'af-warn';
+        afLog('Unrecognised camera ' + (afOpenDeviceId || '').slice(0, 8) + ' — not in per-camera map. Pan forced OFF and auto-framing HELD (safe). If this is the door or rack after a replug, its deviceId shuffled: confirm inverts by hand to enable, or update AF_FORCE_MAP.', 'af-warn');
+      }
       return;
     }
 
@@ -1582,7 +1630,19 @@
     afLog('Inverts restored for ' + afOpenDeviceId.slice(0, 8) + ': tilt ' + (s.t ? 'ON' : 'OFF') + ', pan ' + (s.p ? 'ON' : 'OFF') + '.', 'af-ok');
   }
   ['af_invT', 'af_invP'].forEach((id) => {
-    afQ(id).addEventListener('change', () => { afReadTune(); afSaveInv(); });
+    afQ(id).addEventListener('change', () => {
+      afReadTune();
+      afSaveInv();
+      // A human toggling an invert on an UNRECOGNISED camera is the confirmation
+      // that releases the safety hold: clear the flag and enable auto-framing.
+      if (afInvUnconfirmed) {
+        afInvUnconfirmed = false;
+        if (afPoseReady && afTrack && afCaps && afCaps.tilt) afQ('afGo').disabled = false;
+        afQ('afInvSaved').textContent = 'confirmed by hand for ' + (afOpenDeviceId || '').slice(0, 8);
+        afQ('afInvSaved').className = 'af-ok';
+        afLog('Inverts confirmed by hand — auto-framing enabled for ' + (afOpenDeviceId || '').slice(0, 8) + '.', 'af-ok');
+      }
+    });
   });
 
   // ---- pose model (dynamic import: a CDN failure must not kill the call) ---
@@ -1724,8 +1784,16 @@
     }
 
     if (hasT) {
-      if (afPoseReady) afQ('afGo').disabled = false;
-      afLog('Camera ' + (afOpenDeviceId || '').slice(0, 8) + ' adopted. Tilt/pan available.', 'af-ok');
+      // Hold the Go button for an unrecognised camera (afInvUnconfirmed) so it
+      // cannot auto-frame until a human confirms inverts. Recognised cameras and
+      // the non-forced path enable normally.
+      if (afPoseReady && !afInvUnconfirmed) afQ('afGo').disabled = false;
+      if (afInvUnconfirmed) {
+        afQ('afGo').disabled = true;
+        afLog('Camera ' + (afOpenDeviceId || '').slice(0, 8) + ' adopted but UNRECOGNISED — auto-framing held. Confirm inverts (toggle a checkbox) to enable.', 'af-warn');
+      } else {
+        afLog('Camera ' + (afOpenDeviceId || '').slice(0, 8) + ' adopted. Tilt/pan available.', 'af-ok');
+      }
     } else {
       afLog('This camera exposes no tilt — pick a PIXY in the camera list.', 'af-err');
     }

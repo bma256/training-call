@@ -321,16 +321,20 @@
     // ids hold. Identity confirmed by lens-cover test, never by picker order. If a
     // deviceId ever falls through to UNRECOGNISED, re-enumerate on a clean launch
     // and update these entries.
+    // NB (2026-07-31): deviceIds SWAPPED vs the original bake after a cold power-off
+    // re-enumerated the shared xHCI. Corrected by lens-cover + loop test:
+    // 042f35f6 is now the RACK (pan OFF); b59a1c24 is now the DOOR (pan ON). This is
+    // deviceId-fragile: a future cold boot can swap it back. Durable fix = serial-keyed.
     '042f35f683f16c69317786b094bfd99e1316f7b25336e353923d08c7c1481ff6':
-      { t: true,  p: true,  role: 'door' },
+      { t: true,  p: false, role: 'rack' },
     'b59a1c246aa9e8b80693dab6bf6e44b04bc7593bff455bfb0d8c763f276d945e':
-      { t: true,  p: false, role: 'rack' }
+      { t: true,  p: true,  role: 'door' }
   } : null;
   // Fallback pair for a camera whose deviceId is not in the map. pan:false so an
   // unrecognised camera cannot run away on pan; auto-framing is separately held.
   const AF_FORCE_FALLBACK = { t: true, p: false };
   let afInvUnconfirmed = false;  // set true when an unrecognised camera is adopted
-  console.log('[build] index-autoframe-family Guarantee-A-permap 2026-07-30 — inv=' +
+  console.log('[build] index-autoframe-family Guarantee-A-permap-autostart-swapfix 2026-07-31 — inv=' +
     (params.get('inv') || '(none)') + (AF_FORCE_MAP ? ' (per-camera map active: door/rack)' : ''));
 
   // Google's public STUN servers — free, no signup, fine for most home networks.
@@ -1671,6 +1675,7 @@
       }
       afPoseReady = true;
       if (afTrack && afCaps && afCaps.tilt) afQ('afGo').disabled = false;
+      afMaybeAutoStart('pose ready');
     } catch (err) {
       afPoseError = err;
       afQ('afPoseState').textContent = 'FAILED';
@@ -1739,6 +1744,34 @@
     afLog(afFraming ? 'Auto-framing ON.' : 'Auto-framing OFF.', afFraming ? 'af-ok' : 'af-warn');
   });
 
+  // ---- family auto-start (2026-07-31) ------------------------------------
+  // afStartFraming: turn framing ON hands-free, mirroring the afGo ON path
+  // exactly. Guarded so it is safe by construction — every precondition the
+  // manual Start click relies on must already hold, or it returns without
+  // doing anything.
+  function afStartFraming(reason) {
+    if (afFraming) return;                // already running
+    if (!afTrack) return;                 // no camera track yet
+    if (!afCaps || !afCaps.tilt) return;  // no tilt = trainer's phone — never auto-start
+    if (!afPoseReady) return;             // pose model not loaded yet
+    if (afInvUnconfirmed) return;         // unrecognised camera stays held (fail-safe)
+    afFraming = true;
+    afQ('afGo').textContent = '⏸ Stop auto-framing';
+    afQ('afGo').className = '';
+    afToggle.classList.add('live');
+    afToggle.textContent = 'Advanced ●';
+    afSmX = afSmY = null; afLostSince = 0; afRecentred = false;
+    afLog('Auto-framing ON (auto-started: ' + reason + ').', 'af-ok');
+  }
+
+  // afMaybeAutoStart: only auto-start when the per-camera map is active
+  // (i.e. ?inv=door). A plain load with no map keeps the original
+  // manual-click behaviour completely untouched.
+  function afMaybeAutoStart(reason) {
+    if (!AF_FORCE_MAP) return;
+    afStartFraming(reason);
+  }
+
   // ---- track adoption ----------------------------------------------------
   async function afAdoptTrack(t) {
     afTrack = t;
@@ -1752,7 +1785,7 @@
       afQ('afGo').className = 'go';
       afToggle.classList.remove('live');
       afToggle.textContent = 'Advanced';
-      afLog('Camera changed — auto-framing stopped. Confirm inverts, then restart it.', 'af-warn');
+      afLog('Camera changed — re-adopting…', 'af-warn');
     }
     afQ('afGo').disabled = true;
     if (!t) { afQ('afDev').textContent = '—'; afQ('afPtz').textContent = '—'; return; }
@@ -1793,6 +1826,7 @@
         afLog('Camera ' + (afOpenDeviceId || '').slice(0, 8) + ' adopted but UNRECOGNISED — auto-framing held. Confirm inverts (toggle a checkbox) to enable.', 'af-warn');
       } else {
         afLog('Camera ' + (afOpenDeviceId || '').slice(0, 8) + ' adopted. Tilt/pan available.', 'af-ok');
+        afMaybeAutoStart('camera adopted');
       }
     } else {
       afLog('This camera exposes no tilt — pick a PIXY in the camera list.', 'af-err');

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Training Call
+Comment=Start the training call (room gym, both cameras, switchable)
+Exec=/home/gym/training-call/gymcam-dualcam-remap-launch.sh
+Icon=camera-web
+Terminal=false
+Categories=Network;

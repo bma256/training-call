@@ -292,50 +292,51 @@
   const params = new URLSearchParams(location.search);
   const room = params.get('room') || 'gym';
 
-  // FAMILY-FOOLPROOF BRIDGE — Guarantee A (PER-CAMERA, 2026-07-30). The native
-  // launcher resolves cameras by stable USB serial at the OS layer and appends
-  // inv=door. Two PIXYs need DIFFERENT inverts: the door (GymE-2) is tilt ON /
-  // pan ON, the rack (GymE-1) is tilt ON / pan OFF (measured — the rack genuinely
-  // differs on pan). The browser cannot see serials (both labels are the identical
-  // "EMEET PIXY: EMEET PIXY"), so the only page-visible discriminator is deviceId,
-  // which is stable WITHIN a session but can shuffle across replug. We therefore
-  // hold a baked-in deviceId→pair map (from the live enumeration on this box) and
-  // apply each camera's correct pair on adoption with zero hand-setting. A deviceId
-  // NOT in the map (e.g. after a replug shuffled it, or a third camera) is treated
-  // as UNRECOGNISED: pan is forced OFF (the non-runaway direction) and auto-framing
-  // is HELD until a human confirms inverts — an unknown camera can never run away.
-  // The per-deviceId localStorage lookup is still skipped in forced mode. Param
-  // absent → the page behaves exactly as the base build.
-  //
-  // MAINTENANCE: if these deviceIds ever shuffle (replug across sessions), re-run
-  // the enumeration probe on the live page and update AF_FORCE_MAP below. Door and
-  // rack are distinguished ONLY by these ids here; confirm identity by lens-cover
-  // test, never by picker order.
-  const AF_FORCE_MAP = (params.get('inv') === 'door') ? {
-    // deviceId (full) : { t: invertTilt, p: invertPan, role: label }
-    // deviceId is stable across clean launches through the persistent dualcam/
-    // family profile on the onrender.com origin (verified 2026-07-30 by lens-cover
-    // test across multiple fresh launches: 042f35f6 = door, b59a1c24 = rack). It is
-    // NOT stable if the browser navigates across origins in one window or runs on a
-    // throwaway profile — but production always launches clean to onrender, so these
-    // ids hold. Identity confirmed by lens-cover test, never by picker order. If a
-    // deviceId ever falls through to UNRECOGNISED, re-enumerate on a clean launch
-    // and update these entries.
-    // NB (2026-07-31): deviceIds SWAPPED vs the original bake after a cold power-off
-    // re-enumerated the shared xHCI. Corrected by lens-cover + loop test:
-    // 042f35f6 is now the RACK (pan OFF); b59a1c24 is now the DOOR (pan ON). This is
-    // deviceId-fragile: a future cold boot can swap it back. Durable fix = serial-keyed.
-    '042f35f683f16c69317786b094bfd99e1316f7b25336e353923d08c7c1481ff6':
-      { t: true,  p: false, role: 'rack' },
-    'b59a1c246aa9e8b80693dab6bf6e44b04bc7593bff455bfb0d8c763f276d945e':
-      { t: true,  p: true,  role: 'door' }
-  } : null;
-  // Fallback pair for a camera whose deviceId is not in the map. pan:false so an
-  // unrecognised camera cannot run away on pan; auto-framing is separately held.
+  // FAMILY-FOOLPROOF BRIDGE — Guarantee A (PER-CAMERA). The native launcher
+  // resolves cameras by stable USB serial at the OS layer and appends inv=door.
+  // Two PIXYs need DIFFERENT inverts: the door (GymE-2) is tilt ON / pan ON, the
+  // rack (GymE-1) is tilt ON / pan OFF (measured — the rack genuinely differs on
+  // pan). See the ORDER-KEYED note immediately below for how each camera's pair is
+  // now selected — by enumeration POSITION, launcher-pinned by serial — superseding
+  // the earlier deviceId-hash map, which a cold boot could silently cross-wire.
+  // Guarantee A (PER-CAMERA, ORDER-KEYED) — identity by enumeration POSITION,
+  // not by deviceId. The serial-resolving launcher (gymcam-dualcam-remap-launch.sh)
+  // pins the physical DOOR onto /dev/video0 and the RACK onto /dev/video2 by
+  // hardware serial on every launch, so the browser ALWAYS enumerates door first,
+  // rack second — regardless of how a cold boot re-shuffled USB. We therefore key
+  // each camera's invert pair + role name off its INDEX in the enumerated list
+  // (which the launcher controls) instead of off the deviceId hash (which it does
+  // not). deviceId is HMAC(salt, /dev/videoN): it names the node NUMBER, not the
+  // camera — proven 2026-08-01 by lens-cover under the remap. A cold-boot swap moves
+  // which camera sits on video0 but not the hash string on video0, which is exactly
+  // why deviceId-keying broke and index-keying cannot. deviceId is still used as a
+  // within-session handle for getUserMedia + the camera-switch messages, where it is
+  // perfectly stable. Param absent -> the page behaves exactly as the base build.
+  const AF_FORCE_MODE = (params.get('inv') === 'door');
+  //  index : { t: invertTilt, p: invertPan, role: display name }
+  const AF_ROLE_BY_INDEX = AF_FORCE_MODE ? [
+    { t: true, p: true,  role: 'Door' },   // index 0 — launcher pins the door here (pan ON)
+    { t: true, p: false, role: 'Rack' }    // index 1 — rack (pan OFF)
+  ] : null;
+  // Position of a deviceId in the current enumerated camera list. cameraSelect is
+  // built in enumerate order by listDevices(); -1 if not found.
+  function afCameraIndex(deviceId) {
+    return [...cameraSelect.options].findIndex((o) => o.value === deviceId);
+  }
+  // Role/invert pair for a camera by its enumeration position. null in non-forced
+  // mode; null for an out-of-range index (>=2 or not found) -> treated UNRECOGNISED.
+  function afRoleFor(deviceId) {
+    if (!AF_ROLE_BY_INDEX) return null;
+    const i = afCameraIndex(deviceId);
+    return (i >= 0 && i < AF_ROLE_BY_INDEX.length) ? AF_ROLE_BY_INDEX[i] : null;
+  }
+  // Fallback for a camera whose position is out of range (should not happen under
+  // the remap launcher, which presents exactly two). pan:false so it cannot run
+  // away on pan; auto-framing is separately HELD.
   const AF_FORCE_FALLBACK = { t: true, p: false };
   let afInvUnconfirmed = false;  // set true when an unrecognised camera is adopted
-  console.log('[build] index-autoframe-family Guarantee-A-permap-autostart-swapfix 2026-07-31 — inv=' +
-    (params.get('inv') || '(none)') + (AF_FORCE_MAP ? ' (per-camera map active: door/rack)' : ''));
+  console.log('[build] index-autoframe-family Guarantee-A-orderkey 2026-08-01 — inv=' +
+    (params.get('inv') || '(none)') + (AF_FORCE_MODE ? ' (order-keyed: index0=Door, index1=Rack)' : ''));
 
   // Google's public STUN servers — free, no signup, fine for most home networks.
   // ICE tries these (and any direct path) first; they're enough for wifi-to-wifi calls.
@@ -915,9 +916,12 @@
   }
   function relabelCameraOptions() {
     const names = loadCameraNames();
-    [...cameraSelect.options].forEach((opt) => {
+    [...cameraSelect.options].forEach((opt, i) => {
       const raw = rawCameraLabels[opt.value] || opt.textContent;
-      opt.textContent = names[opt.value] ? `${names[opt.value]} (${raw})` : raw;
+      // ORDER-KEYED: prefer the position-derived Door/Rack role in forced mode.
+      const role = (AF_ROLE_BY_INDEX && AF_ROLE_BY_INDEX[i]) ? AF_ROLE_BY_INDEX[i].role : null;
+      const label = role || names[opt.value] || null;
+      opt.textContent = label ? `${label} (${raw})` : raw;
     });
   }
   function setCameraName(name) {
@@ -1001,13 +1005,15 @@
   function sendCameraList() {
     if (!controlChannel || controlChannel.readyState !== 'open') return;
     const names = loadCameraNames(); // CAMERA NAMING MODULE: custom names, keyed by deviceId
-    const cameras = [...cameraSelect.options].map((opt) => ({
+    const cameras = [...cameraSelect.options].map((opt, i) => ({
       deviceId: opt.value,
-      // Prefer the clean custom name (e.g. "GymE-1") over the full dropdown
-      // text, which includes the raw OS-reported label in parentheses —
-      // that extra detail is useful locally but just noise on the other
-      // side's screen.
-      label: names[opt.value] || rawCameraLabels[opt.value] || opt.textContent,
+      // ORDER-KEYED NAMES: in forced mode the remap launcher pins door=index0,
+      // rack=index1, so enumeration position gives a stable, correct Door/Rack
+      // label with no deviceId dependence. Falls back to a custom name, then the
+      // raw OS-reported label (identical "EMEET PIXY" on both, which is why the
+      // old label was useless as a discriminator).
+      label: (AF_ROLE_BY_INDEX && AF_ROLE_BY_INDEX[i] ? AF_ROLE_BY_INDEX[i].role : null)
+        || names[opt.value] || rawCameraLabels[opt.value] || opt.textContent,
       active: opt.value === cameraSelect.value
     }));
     controlChannel.send(JSON.stringify({ type: 'camera-list', cameras }));
@@ -1582,9 +1588,9 @@
     // runs, so the current camera's deviceId is available for lookup here. The map
     // applies each camera's correct pair with zero hand-setting; localStorage is
     // skipped entirely in forced mode. An unrecognised deviceId fails SAFE.
-    if (AF_FORCE_MAP) {
+    if (AF_FORCE_MODE) {
       afInvUnconfirmed = false;
-      const hit = AF_FORCE_MAP[afOpenDeviceId];
+      const hit = afRoleFor(afOpenDeviceId);
       if (hit) {
         afQ('af_invT').checked = hit.t;
         afQ('af_invP').checked = hit.p;
@@ -1605,7 +1611,7 @@
         afReadTune();
         afQ('afInvSaved').textContent = 'UNRECOGNISED cam ' + (afOpenDeviceId || '').slice(0, 8) + ' — auto-framing HELD; confirm inverts';
         afQ('afInvSaved').className = 'af-warn';
-        afLog('Unrecognised camera ' + (afOpenDeviceId || '').slice(0, 8) + ' — not in per-camera map. Pan forced OFF and auto-framing HELD (safe). If this is the door or rack after a replug, its deviceId shuffled: confirm inverts by hand to enable, or update AF_FORCE_MAP.', 'af-warn');
+        afLog('Unrecognised camera ' + (afOpenDeviceId || '').slice(0, 8) + ' at index ' + afCameraIndex(afOpenDeviceId) + ' — expected exactly two (index0=Door, index1=Rack) from the remap launcher. Pan forced OFF and auto-framing HELD (safe). If you see this, the launcher did not pin both cameras: relaunch via the icon, or confirm inverts by hand to enable.', 'af-warn');
       }
       return;
     }
@@ -1768,7 +1774,7 @@
   // (i.e. ?inv=door). A plain load with no map keeps the original
   // manual-click behaviour completely untouched.
   function afMaybeAutoStart(reason) {
-    if (!AF_FORCE_MAP) return;
+    if (!AF_FORCE_MODE) return;
     afStartFraming(reason);
   }
 
@@ -2010,7 +2016,7 @@
   if (afLoadTune()) afLog('Tuning restored.', 'af-ok');
   afReadTune();
   afLog('Auto-frame module loaded (v14 merge).', 'af-ok');
-  afLog('Inverts are stored per deviceId PER ORIGIN — nothing carries over from the bench on localhost:8090. Expect to set them once here.', 'af-warn');
+  if (!AF_FORCE_MODE) afLog('Inverts are stored per deviceId PER ORIGIN — nothing carries over from the bench on localhost:8090. Expect to set them once here.', 'af-warn');
   requestAnimationFrame(afLoop);
   // ===== AUTO-FRAME MODULE: JS END =======================================
 

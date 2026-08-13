@@ -80,6 +80,34 @@ echo "[REMAP] Chromium will enumerate: index0 = /dev/video0 = DOOR , index1 = /d
 
 mkdir -p "$PROFILE_DIR"
 
+# ---- Single-instance guard (2026-08-12) -----------------------------------
+# Chromium is single-instance PER PROFILE: if an instance is already running on
+# this --user-data-dir, a second launch does NOT open a fresh browser -- it
+# hands the URL to the running one as a new TAB and exits. Each tab auto-dials
+# room=gym and holds a live signaling WebSocket, so "relaunch the icon to
+# restart" silently STACKED live, room-occupying connections that only a full
+# reboot cleared. (Diagnosed 2026-08-12 from Render logs: repeated REJECTED
+# room-full with NO heartbeat-terminate -- the ghosts were alive, not dead.)
+# Kill any Chromium bound to THIS profile first, so relaunch is a true restart.
+# Scoped by the profile path, so no other browser you run is touched. The bwrap
+# sandbox does not unshare the PID namespace, so a host-side pkill sees the
+# child fine. pgrep/pkill never match their own process.
+if pgrep -f "user-data-dir=$PROFILE_DIR" >/dev/null 2>&1; then
+  echo "[REMAP] Existing Chromium on this profile detected -- terminating for a clean restart."
+  pkill -TERM -f "user-data-dir=$PROFILE_DIR" 2>/dev/null || true
+  for _ in 1 2 3 4 5 6; do
+    pgrep -f "user-data-dir=$PROFILE_DIR" >/dev/null 2>&1 || break
+    sleep 0.5
+  done
+  if pgrep -f "user-data-dir=$PROFILE_DIR" >/dev/null 2>&1; then
+    echo "[REMAP] Still alive after TERM -- sending KILL."
+    pkill -KILL -f "user-data-dir=$PROFILE_DIR" 2>/dev/null || true
+    sleep 0.5
+  fi
+  echo "[REMAP] Previous instance cleared."
+fi
+# ---------------------------------------------------------------------------
+
 echo "[REMAP] Launching isolated Chromium at: ${TARGET_URL}"
 
 # Proven bwrap flag set (session B), VERBATIM, with the four node binds REMAPPED

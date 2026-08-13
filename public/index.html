@@ -376,6 +376,7 @@
   let pc = null;
   let ws = null;
   let inCall = false;
+  let roomFull = false; // set on server 'full' -- stops the auto-reconnect loop from re-grabbing the room
   let pendingCandidates = [];
   let amCaller = false; // only the caller initiates ICE restarts, to avoid both sides colliding
   let controlChannel = null; // CAMERA REMOTE SWITCH MODULE: data channel for cross-side camera control
@@ -558,15 +559,24 @@
         setPlaceholder('Call ended', 'The other side left. Tap Start Call to begin a new session.', true);
         teardownPeerConnection();
       } else if (msg.type === 'full') {
+        // Stand DOWN, do not retry. Being turned away means two LIVE
+        // connections already hold this room (often our own stale tabs).
+        // The old code left inCall=true, so ws.onclose below reconnected
+        // every 2s forever and re-grabbed any slot the instant it freed.
+        // Reset to idle: the only way back in is a deliberate Start Call.
+        roomFull = true;
+        inCall = false;
+        callBtn.textContent = 'Start Call';
+        callBtn.classList.remove('end');
         setStatus('Room already has two people', 'bad');
-        setPlaceholder('Call already in progress', 'This link is already connected on two devices.', true);
+        setPlaceholder('Call already in progress', 'This link is already open on two devices. Close any other Training Call tab or window, then tap Start Call.', true);
       }
     };
 
     ws.onclose = () => {
-      if (inCall) {
+      if (inCall && !roomFull) {
         setStatus('Signaling lost — retrying…', 'bad');
-        setTimeout(() => { if (inCall) connectSignaling(); }, 2000);
+        setTimeout(() => { if (inCall && !roomFull) connectSignaling(); }, 2000);
       }
     };
 
@@ -683,6 +693,7 @@
 
   async function startCallFlow() {
     if (inCall) return;
+    roomFull = false; // a deliberate Start Call clears any prior room-full stand-down
     inCall = true;
     callBtn.textContent = 'End Call';
     callBtn.classList.add('end');

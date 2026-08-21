@@ -33,6 +33,15 @@
 # Authoritative serial map (session B): DOOR = A260204000401950, RACK = A260204000406584.
 # Live public/index.html and the existing launchers are UNTOUCHED by this file.
 #
+# 2026-08-20 NVIDIA fix: on the migrated ASRock/i7-7700K/GTX 1070 rig, the fresh
+# --dev inside bwrap exposed /dev/dri but NOT the proprietary NVIDIA device nodes,
+# so Chromium's GPU process could not create a GL context (ANGLE eglInitialize
+# failed), GPU access was disabled, and the pose model fell to the CPU path — which
+# SIGILLs on Kaby Lake (no AVX-512). Binding the five /dev/nvidia* nodes into the
+# sandbox lets the NVIDIA driver init, restoring the GPU inference path. The nodes
+# are bound fail-soft (skipped if absent) so this launcher still works unchanged on
+# a machine without an NVIDIA GPU.
+#
 set -euo pipefail
 
 # ---- Configuration --------------------------------------------------------
@@ -108,6 +117,28 @@ if pgrep -f "user-data-dir=$PROFILE_DIR" >/dev/null 2>&1; then
 fi
 # ---------------------------------------------------------------------------
 
+# ---- NVIDIA device-node binds (2026-08-20) --------------------------------
+# The fresh --dev below gives the sandbox a clean /dev with only the four remapped
+# video nodes; /dev/dri is bound back for the DRM path. The proprietary NVIDIA
+# driver ALSO needs its own character-device nodes (/dev/nvidia0, nvidiactl,
+# nvidia-modeset, nvidia-uvm, nvidia-uvm-tools). Without them, Chromium's GPU
+# process cannot create a GL context and disables GPU acceleration, forcing the
+# pose model onto the CPU path (which SIGILLs on this Kaby Lake CPU). Build the
+# bind args for whichever nodes exist, so the launcher stays portable to non-NVIDIA
+# hosts (empty array = no extra binds = original behaviour).
+NVIDIA_BINDS=()
+for node in /dev/nvidia0 /dev/nvidiactl /dev/nvidia-modeset /dev/nvidia-uvm /dev/nvidia-uvm-tools; do
+  if [[ -e "$node" ]]; then
+    NVIDIA_BINDS+=( --dev-bind "$node" "$node" )
+  fi
+done
+if [[ ${#NVIDIA_BINDS[@]} -gt 0 ]]; then
+  echo "[REMAP] Binding ${#NVIDIA_BINDS[@]} NVIDIA arg-tokens into the sandbox for GPU access."
+else
+  echo "[REMAP] No /dev/nvidia* nodes found on host -- launching without NVIDIA binds."
+fi
+# ---------------------------------------------------------------------------
+
 echo "[REMAP] Launching isolated Chromium at: ${TARGET_URL}"
 
 # Proven bwrap flag set (session B), VERBATIM, with the four node binds REMAPPED
@@ -127,6 +158,7 @@ exec bwrap \
   --dev-bind "$RACK0" /dev/video2 \
   --dev-bind "$RACK1" /dev/video3 \
   --dev-bind /dev/dri /dev/dri \
+  "${NVIDIA_BINDS[@]}" \
   --dev-bind /dev/snd /dev/snd \
   --tmpfs /tmp \
   --bind /run /run \

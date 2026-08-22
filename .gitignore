@@ -3,3 +3,7 @@ npm-debug.log
 .DS_Store
 *.bak
 *.bak-*
+
+# KINESIS / Vosk: commit the small library, NOT the 40MB model
+# (model is fetched+verified by ops/fetch-vosk.sh; also carried in the recovery bundle)
+public/vendor/vosk/*.tar.gz

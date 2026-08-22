@@ -2018,6 +2018,7 @@
     const lms = result && result.landmarks && result.landmarks[0];
     if (lms) afM.vis = afVisStats(lms);
     afLastResult = result;
+    if (window.__KINESIS__) window.__KINESIS__.consume(result);
 
     afRender(result);
     if (afFraming) afMaybeDrive(result);
@@ -2033,6 +2034,383 @@
 
 
   init();
+})();
+</script>
+<script>
+/* =======================================================================
+   KINESIS V4 — dormant, flag-gated, READ-ONLY consumer of the pose stream
+   Build 2026-08-22b. Voice arming via VOSK (offline WASM speech), SELF-HOSTED.
+   -----------------------------------------------------------------------
+   - ?kinesis=1 to enable; fully dormant otherwise.
+   - Read-only: reads landmarks via window.__KINESIS__.consume(result),
+     writes ONLY to its own panel + arm/disarm. Never touches WebRTC/PTZ/framing.
+   - Foundation = skeleton adapter (knSkeleton): named joints only.
+   - V2 core unchanged: counting runs only while ARMED; auto-range self-cal.
+   - VOICE (changed in V4): the browser's on-device recognizer was ruled out on
+     this box (mic chain works, zero transcripts). V4 uses VOSK — offline WASM
+     speech, small English model, no account, no Google backend. Phrases:
+     "start set" -> arm, "stop set" -> disarm, reusing the SAME phraseHit()/fire()
+     path proven in V2/V3. Fuzzy match + re-fire guard. Voice defaults OFF (it
+     shares the mic; fine solo, a separate question on a live call). Manual
+     button is the permanent fallback.
+   - ROUTE B (this build): Vosk lib + model SELF-HOSTED from vendor/vosk/ — no CDN
+     dependency for a load-bearing feature. Proven local on 2026-08-22. Override
+     still available via ?voskLib= / ?voskModel= for testing.
+   - Instrument: the panel shows the RAW transcript + any error (V3's panel only
+     showed matches, which hid misses — a null result was undiagnosable).
+   - Safety net: a set auto-disarms after 90 s with no counted rep, so a missed
+     "stop set" can't leave a set running forever.
+   - Calibration override still available: ?down=NN&up=MM
+   ======================================================================= */
+(function () {
+  'use strict';
+  var Q = new URLSearchParams(location.search);
+  if (Q.get('kinesis') !== '1') return;
+
+  // ---------- SKELETON ADAPTER (only code that knows raw MP indices) ------
+  var MP = {
+    nose:0,
+    shoulderL:11, shoulderR:12, elbowL:13, elbowR:14, wristL:15, wristR:16,
+    hipL:23, hipR:24, kneeL:25, kneeR:26, ankleL:27, ankleR:28
+  };
+  function J(lms,i){ var p=lms[i]; if(!p) return null;
+    return {x:p.x,y:p.y,z:(p.z==null?0:p.z),v:(p.visibility==null?0:p.visibility)}; }
+  function mid(a,b){ if(!a||!b) return null;
+    return {x:(a.x+b.x)/2,y:(a.y+b.y)/2,z:(a.z+b.z)/2,v:Math.min(a.v,b.v)}; }
+  function knSkeleton(lms){
+    if(!lms) return null;
+    var s={ nose:J(lms,MP.nose),
+      shoulderL:J(lms,MP.shoulderL),shoulderR:J(lms,MP.shoulderR),
+      elbowL:J(lms,MP.elbowL),elbowR:J(lms,MP.elbowR),
+      wristL:J(lms,MP.wristL),wristR:J(lms,MP.wristR),
+      hipL:J(lms,MP.hipL),hipR:J(lms,MP.hipR),
+      kneeL:J(lms,MP.kneeL),kneeR:J(lms,MP.kneeR),
+      ankleL:J(lms,MP.ankleL),ankleR:J(lms,MP.ankleR),
+      source:'mediapipe-blazepose-33' };
+    s.shoulderMid=mid(s.shoulderL,s.shoulderR);
+    s.hipMid=mid(s.hipL,s.hipR);
+    return s;
+  }
+
+  // ---------- geometry on NAMED joints -----------------------------------
+  function visOK(js,thr){ for(var i=0;i<js.length;i++){ if(!js[i]||js[i].v<thr) return false; } return true; }
+  function angleDeg(a,b,c){
+    if(!a||!b||!c) return null;
+    var abx=a.x-b.x,aby=a.y-b.y,cbx=c.x-b.x,cby=c.y-b.y;
+    var m1=Math.hypot(abx,aby),m2=Math.hypot(cbx,cby);
+    if(m1===0||m2===0) return null;
+    var cos=Math.max(-1,Math.min(1,(abx*cbx+aby*cby)/(m1*m2)));
+    return Math.acos(cos)*180/Math.PI;
+  }
+
+  // ---------- exercise profiles ------------------------------------------
+  var PROFILES = {
+    pushup:{
+      label:'Push-up',
+      signal:function(sk){
+        var a=[];
+        if(visOK([sk.shoulderL,sk.elbowL,sk.wristL],0.5)) a.push(angleDeg(sk.shoulderL,sk.elbowL,sk.wristL));
+        if(visOK([sk.shoulderR,sk.elbowR,sk.wristR],0.5)) a.push(angleDeg(sk.shoulderR,sk.elbowR,sk.wristR));
+        if(!a.length) return null;
+        var s=0; for(var i=0;i<a.length;i++) s+=a[i]; return s/a.length;
+      },
+      down:100, up:150, minRepMs:600
+    }
+  };
+  var active='pushup';
+
+  var ovrDown=parseFloat(Q.get('down')), ovrUp=parseFloat(Q.get('up'));
+  function thrDown(){ return isNaN(ovrDown)?PROFILES[active].down:ovrDown; }
+  function thrUp(){   return isNaN(ovrUp)?PROFILES[active].up:ovrUp; }
+
+  var NO_REP_TIMEOUT_MS = 90000; // auto-disarm after 90s with no counted rep
+
+  // ---------- state: session + current set + rep machine -----------------
+  var lastSkeleton=null;
+  var armed=false;
+  var rep={ state:'up', sig:null, lastRepAt:0 };
+  var set={ reps:0, min:Infinity, max:-Infinity, start:0, lastRepWall:0 };
+  var session={ reps:0, sets:0 };
+  var lastSet=null;
+  var autoStopTimer=null;
+
+  function scheduleAutoStop(){
+    if(autoStopTimer) clearTimeout(autoStopTimer);
+    autoStopTimer=setTimeout(function(){
+      if(armed){ note('auto-stop (90s no rep)'); disarmSet(); }
+    }, NO_REP_TIMEOUT_MS);
+  }
+  function clearAutoStop(){ if(autoStopTimer){ clearTimeout(autoStopTimer); autoStopTimer=null; } }
+
+  function armSet(){
+    if(armed) return;
+    armed=true;
+    set={ reps:0, min:Infinity, max:-Infinity, start:performance.now(), lastRepWall:Date.now() };
+    rep.state='up'; rep.lastRepAt=0;
+    scheduleAutoStop();
+    render();
+  }
+  function disarmSet(){
+    if(!armed) return;
+    armed=false; clearAutoStop();
+    session.sets++;
+    var range=(set.max>set.min)?(set.max-set.min):0;
+    var sugD=null,sugU=null;
+    if(range>=25){ sugD=Math.round(set.min+0.25*range); sugU=Math.round(set.max-0.25*range); }
+    lastSet={ reps:set.reps,
+      min:(set.min===Infinity?null:set.min), max:(set.max===-Infinity?null:set.max),
+      dur:(performance.now()-set.start)/1000, sugD:sugD, sugU:sugU, smallRange:(range<25) };
+    render();
+  }
+  function toggleSet(){ armed?disarmSet():armSet(); }
+  function resetAll(){
+    armed=false; clearAutoStop();
+    rep={state:'up',sig:null,lastRepAt:0};
+    set={reps:0,min:Infinity,max:-Infinity,start:0,lastRepWall:0};
+    session={reps:0,sets:0}; lastSet=null; render();
+  }
+
+  function feed(result){
+    var lms=result&&result.landmarks&&result.landmarks[0];
+    var sk=knSkeleton(lms); lastSkeleton=sk;
+    if(!sk){ rep.sig=null; render(); return; }
+    var sig=PROFILES[active].signal(sk);
+    rep.sig=sig;
+    if(armed && sig!=null){
+      if(sig<set.min) set.min=sig;
+      if(sig>set.max) set.max=sig;
+      var now=performance.now();
+      if(rep.state==='up' && sig<=thrDown()){
+        rep.state='down';
+      } else if(rep.state==='down' && sig>=thrUp()){
+        if(now-rep.lastRepAt>=PROFILES[active].minRepMs){
+          set.reps++; session.reps++; rep.lastRepAt=now; set.lastRepWall=Date.now();
+          scheduleAutoStop(); // reset the no-rep timer on every counted rep
+        }
+        rep.state='up';
+      }
+    }
+    render();
+  }
+
+  // ---------- VOICE (on-device, offline) ---------------------------------
+  var voice={ on:false, supported:false, status:'off', lastHeard:'', raw:'',
+              model:null, recognizer:null, audioCtx:null, micStream:null,
+              srcNode:null, procNode:null, loading:false };
+  function note(msg){ voice.lastHeard=msg; render(); }
+
+  function phraseHit(text){
+    var t=(' '+text.toLowerCase()+' ').replace(/[^a-z ]/g,' ');
+    var hasSet = t.indexOf(' set ')>=0 || t.indexOf(' sets ')>=0;
+    var hasStart = t.indexOf(' start ')>=0 || t.indexOf(' begin ')>=0;
+    var hasStop  = t.indexOf(' stop ')>=0 || t.indexOf(' done ')>=0 || t.indexOf(' end ')>=0;
+    if(hasStart && hasStop) return null;      // ambiguous, ignore
+    if(hasStart && hasSet) return 'start';
+    if(hasStop && hasSet)  return 'stop';
+    return null;
+  }
+
+  var lastFire=0;
+  function fire(kind){
+    var now=Date.now();
+    if(now-lastFire < 1200) return;           // re-fire guard
+    if(kind==='start' && !armed){ lastFire=now; note('heard: start set'); armSet(); }
+    else if(kind==='stop' && armed){ lastFire=now; note('heard: stop set'); disarmSet(); }
+  }
+
+  // ---- VOSK engine (route A: lib+model from jsDelivr CDN) --------------
+  // Overridable for testing via ?voskLib= and ?voskModel= .
+  var VOSK_LIB_URL   = Q.get('voskLib')   || 'vendor/vosk/vosk.js';
+  var VOSK_MODEL_URL = Q.get('voskModel') || 'vendor/vosk/vosk-model-small-en-us-0.15.tar.gz';
+  var VOSK_SAMPLE_RATE = 16000;             // Vosk small-en model is 16k
+
+  function loadScript(url){
+    return new Promise(function(resolve,reject){
+      var sc=document.createElement('script');
+      sc.src=url; sc.async=true;
+      sc.onload=function(){ resolve(); };
+      sc.onerror=function(){ reject(new Error('script load failed: '+url)); };
+      document.head.appendChild(sc);
+    });
+  }
+
+  function voiceStart(){
+    if(voice.on || voice.loading) return;
+    voice.loading=true; voice.status='loading lib…'; voice.raw=''; render();
+
+    var libP = (window.Vosk) ? Promise.resolve() : loadScript(VOSK_LIB_URL);
+    libP.then(function(){
+      if(!window.Vosk){ throw new Error('Vosk global missing after lib load'); }
+      voice.status='loading model (~40MB)…'; render();
+      return window.Vosk.createModel(VOSK_MODEL_URL);
+    }).then(function(model){
+      voice.model=model;
+      voice.status='opening mic…'; render();
+      // Small grammar constrains the decoder to our phrases (+[unk] catch-all).
+      var rec=new model.KaldiRecognizer(VOSK_SAMPLE_RATE,
+        JSON.stringify(['start set','stop set','begin set','end set','done set','[unk]']));
+      rec.setWords(true);
+      rec.on('result', function(msg){
+        var txt=(msg && msg.result && msg.result.text) || '';
+        voice.raw=txt||'(empty final)';
+        var hit=phraseHit(txt);
+        if(hit) fire(hit);
+        render();
+      });
+      rec.on('partialresult', function(msg){
+        var txt=(msg && msg.result && msg.result.partial) || '';
+        if(txt) voice.raw='… '+txt;
+        render();
+      });
+      voice.recognizer=rec;
+      return navigator.mediaDevices.getUserMedia({audio:true, video:false});
+    }).then(function(stream){
+      voice.micStream=stream;
+      var AC=window.AudioContext||window.webkitAudioContext;
+      voice.audioCtx=new AC();
+      voice.srcNode=voice.audioCtx.createMediaStreamSource(stream);
+      // ScriptProcessor is deprecated but universally present; fine for a mic tap.
+      var bufSize=4096;
+      voice.procNode=voice.audioCtx.createScriptProcessor(bufSize,1,1);
+      voice.procNode.onaudioprocess=function(ev){
+        if(!voice.on || !voice.recognizer) return;
+        try{ voice.recognizer.acceptWaveform(ev.inputBuffer); }catch(e){}
+      };
+      voice.srcNode.connect(voice.procNode);
+      voice.procNode.connect(voice.audioCtx.destination); // needed for onaudioprocess to fire
+      voice.on=true; voice.loading=false; voice.status='listening (vosk)'; render();
+    }).catch(function(e){
+      voice.loading=false; voice.on=false;
+      voice.status='err: '+(e && (e.message||e.name) || '?'); render();
+    });
+  }
+
+  function voiceStop(){
+    voice.on=false; voice.loading=false;
+    try{ if(voice.procNode){ voice.procNode.disconnect(); voice.procNode.onaudioprocess=null; } }catch(e){}
+    try{ if(voice.srcNode) voice.srcNode.disconnect(); }catch(e){}
+    try{ if(voice.audioCtx) voice.audioCtx.close(); }catch(e){}
+    try{ if(voice.micStream) voice.micStream.getTracks().forEach(function(t){ t.stop(); }); }catch(e){}
+    try{ if(voice.recognizer && voice.recognizer.remove) voice.recognizer.remove(); }catch(e){}
+    voice.procNode=null; voice.srcNode=null; voice.audioCtx=null;
+    voice.micStream=null; voice.recognizer=null;
+    voice.status='off'; render();
+  }
+  function voiceToggle(){ voice.on||voice.loading?voiceStop():voiceStart(); }
+
+  // ---------- panel ------------------------------------------------------
+  var el={};
+  function fmt(x,d){ return (x==null)?'—':(+x).toFixed(d==null?2:d); }
+  function vpair(a,b){ return fmt(a?a.v:null,2)+' / '+fmt(b?b.v:null,2); }
+
+  function buildPanel(){
+    var st=document.createElement('style');
+    st.textContent=
+      '#knPanel{position:fixed;left:10px;top:10px;z-index:99998;background:#171b22;color:#cfd8e3;'
+      +'font:12px/1.4 system-ui,-apple-system,sans-serif;border:1px solid #2b313c;border-radius:10px;'
+      +'padding:10px 12px;min-width:234px;box-shadow:0 6px 20px rgba(0,0,0,.35)}'
+      +'#knPanel h4{margin:0 0 6px;font-size:11px;color:#9fb0c4;letter-spacing:.05em;text-transform:uppercase;'
+      +'display:flex;justify-content:space-between;align-items:center}'
+      +'#knBadge{font-weight:700;padding:1px 7px;border-radius:10px;font-size:10px;letter-spacing:.06em}'
+      +'#knBadge.idle{background:#33210f;color:#e8c46a}#knBadge.armed{background:#123322;color:#7fe0a3}'
+      +'#knPanel .kr{display:flex;justify-content:space-between;gap:12px;margin:2px 0}'
+      +'#knPanel .kr span:last-child{color:#e6edf5;font-variant-numeric:tabular-nums}'
+      +'#knPanel .knreps{font-size:26px;font-weight:700;color:#7fe0a3;line-height:1;margin:5px 0}'
+      +'#knPanel hr{border:0;border-top:1px solid #2b313c;margin:7px 0}'
+      +'#knPanel .knsub{color:#7f8b99;font-size:11px}'
+      +'#knPanel button{margin-top:6px;width:100%;background:#232a34;color:#cfd8e3;border:1px solid #333c48;'
+      +'border-radius:6px;padding:6px;cursor:pointer;font:12px system-ui}'
+      +'#knPanel button:hover{background:#2b333f}'
+      +'#knArm.armed{background:#123322;border-color:#1f6f45;color:#9be9bf}'
+      +'#knArm.idle{background:#2a3340;border-color:#3a556e;color:#bfe0ff}'
+      +'#knVoice.on{background:#10233a;border-color:#2f5c86;color:#bfe0ff}';
+    document.head.appendChild(st);
+
+    var d=document.createElement('div'); d.id='knPanel';
+    d.innerHTML=
+      '<h4><span>KINESIS V5 &middot; read-only</span><span id="knBadge" class="idle">IDLE</span></h4>'
+      +'<div class="kr"><span>Exercise</span><span id="knEx">&mdash;</span></div>'
+      +'<div class="knreps"><span id="knReps">0</span> <span id="knRepsLbl" class="knsub">reps</span></div>'
+      +'<div class="kr knsub"><span>session total</span><span id="knTot">0 reps / 0 sets</span></div>'
+      +'<div class="kr"><span>Phase</span><span id="knState">&mdash;</span></div>'
+      +'<div class="kr"><span>Signal</span><span id="knSig">&mdash;</span></div>'
+      +'<div class="kr knsub"><span>down / up</span><span id="knThr">&mdash;</span></div>'
+      +'<button id="knArm" class="idle">Arm set</button>'
+      +'<button id="knVoice">Voice: off</button>'
+      +'<div class="kr knsub" style="margin-top:5px"><span>voice</span><span id="knVstat">off</span></div>'
+      +'<div class="kr knsub"><span>heard</span><span id="knHeard">&mdash;</span></div>'
+      +'<div class="kr knsub"><span>raw</span><span id="knRaw">&mdash;</span></div>'
+      +'<div id="knLast" class="knsub" style="margin-top:6px"></div>'
+      +'<hr>'
+      +'<div class="kr knsub"><span>adapter</span><span id="knSrc">&mdash;</span></div>'
+      +'<div class="kr knsub"><span>vis el L/R</span><span id="knVel">&mdash;</span></div>'
+      +'<div class="kr knsub"><span>vis wr L/R</span><span id="knVwr">&mdash;</span></div>'
+      +'<button id="knReset">Reset all</button>';
+    document.body.appendChild(d);
+    document.getElementById('knArm').addEventListener('click',toggleSet);
+    document.getElementById('knVoice').addEventListener('click',voiceToggle);
+    document.getElementById('knReset').addEventListener('click',resetAll);
+
+    el.badge=document.getElementById('knBadge');
+    el.ex=document.getElementById('knEx');
+    el.reps=document.getElementById('knReps');
+    el.repsLbl=document.getElementById('knRepsLbl');
+    el.tot=document.getElementById('knTot');
+    el.state=document.getElementById('knState');
+    el.sig=document.getElementById('knSig');
+    el.thr=document.getElementById('knThr');
+    el.arm=document.getElementById('knArm');
+    el.voiceBtn=document.getElementById('knVoice');
+    el.vstat=document.getElementById('knVstat');
+    el.heard=document.getElementById('knHeard');
+    el.raw=document.getElementById('knRaw');
+    el.last=document.getElementById('knLast');
+    el.src=document.getElementById('knSrc');
+    el.vel=document.getElementById('knVel');
+    el.vwr=document.getElementById('knVwr');
+    render();
+  }
+
+  function render(){
+    if(!el.reps) return;
+    var sk=lastSkeleton;
+    el.ex.textContent=PROFILES[active].label;
+    el.badge.textContent=armed?'ARMED':'IDLE';
+    el.badge.className=armed?'armed':'idle';
+    el.arm.textContent=armed?'Stop set':'Arm set';
+    el.arm.className=armed?'armed':'idle';
+    el.reps.textContent=armed?set.reps:(lastSet?lastSet.reps:0);
+    el.repsLbl.textContent=armed?'reps (this set)':'reps (last set)';
+    el.tot.textContent=session.reps+' reps / '+session.sets+' sets';
+    el.state.textContent=rep.state.toUpperCase();
+    el.sig.textContent=(rep.sig==null)?'—':fmt(rep.sig,1)+'°';
+    var ovr=(!isNaN(ovrDown)||!isNaN(ovrUp))?' (url)':'';
+    el.thr.textContent=Math.round(thrDown())+'° / '+Math.round(thrUp())+'°'+ovr;
+
+    el.voiceBtn.textContent='Voice: '+(voice.on?'on':'off');
+    el.voiceBtn.className=voice.on?'on':'';
+    el.vstat.textContent=voice.status;
+    el.heard.textContent=voice.lastHeard||'—';
+    if(el.raw) el.raw.textContent=voice.raw||'—';
+
+    if(!armed && lastSet){
+      var r=lastSet, txt='last set: '+r.reps+' reps · '
+        +(r.min==null?'—':fmt(r.min,0)+'°–'+fmt(r.max,0)+'°')+' · '+fmt(r.dur,0)+'s';
+      if(r.smallRange) txt+=' · range small — do fuller reps';
+      else if(r.sugD!=null) txt+=' · suggest down/up '+r.sugD+'°/'+r.sugU+'°';
+      el.last.textContent=txt;
+    } else { el.last.textContent=''; }
+
+    el.src.textContent=sk?sk.source:'—';
+    el.vel.textContent=sk?vpair(sk.elbowL,sk.elbowR):'—';
+    el.vwr.textContent=sk?vpair(sk.wristL,sk.wristR):'—';
+  }
+
+  // ---------- register tap + hooks ---------------------------------------
+  window.__KINESIS__={ consume:feed, arm:armSet, disarm:disarmSet, toggle:toggleSet,
+                       voice:voiceToggle, reset:resetAll, version:'v5-2026-08-22b' };
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',buildPanel);
+  else buildPanel();
 })();
 </script>
 </body>

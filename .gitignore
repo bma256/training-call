@@ -7,3 +7,9 @@ npm-debug.log
 # KINESIS / Vosk: commit the small library, NOT the 40MB model
 # (model is fetched+verified by ops/fetch-vosk.sh; also carried in the recovery bundle)
 public/vendor/vosk/*.tar.gz
+
+# Footgun launcher variant — never commit (broken NVIDIA-bind copy)
+ops/gymcam-dualcam-remap-launch-nvidia.sh
+
+# Box-local Claude permission posture — never commit
+.claude/settings.json

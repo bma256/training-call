@@ -23,9 +23,10 @@ never use it. The correct launcher lives in `ops/`.
 ---
 
 ## Working rhythm
-- **One step at a time.** Propose exactly one action, then wait. Do not stack steps.
 - **Discuss → options → decide → execute.** The permission approval prompt IS the
-  decision-to-execute step. Don't route around it.
+  decision-to-execute step. Don't route around it. Multi-step work can proceed
+  continuously once the approach is agreed — no need to pause after every single action;
+  the per-tool approval prompts already gate execution.
 - Summaries and next steps in replies; no long reasoning walkthroughs unless asked.
 
 ## Prove-then-promote (non-negotiable)

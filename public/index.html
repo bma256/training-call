@@ -288,6 +288,33 @@
   const LS_CAMERA = 'trainingCall:cameraId';
   const LS_MIC = 'trainingCall:micId';
   const LS_HAS_CONNECTED = 'trainingCall:hasConnectedBefore';
+  const LS_CLIENT_ID = 'trainingCall:clientId';
+
+  // SEAT-SWAP MODULE: a persistent per-device identity, so a reconnect (Wi-Fi
+  // drop, page refresh, launcher relaunch) can be recognized by the server as
+  // "this same client coming back" instead of a second, competing device.
+  // Stored in localStorage so it survives refreshes and relaunches on this
+  // profile (see ops/gymcam-dualcam-remap-launch.sh's persistent
+  // --user-data-dir). Generated once; reused forever after.
+  function getOrCreateClientId() {
+    try {
+      let id = localStorage.getItem(LS_CLIENT_ID);
+      if (id) return id;
+      id = (window.crypto && typeof window.crypto.randomUUID === 'function')
+        ? window.crypto.randomUUID()
+        : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+      localStorage.setItem(LS_CLIENT_ID, id);
+      return id;
+    } catch (e) {
+      // localStorage unavailable (private mode, etc.) — fall back to a
+      // per-load id. Reconnects in this session just won't be recognized;
+      // behavior degrades to the pre-seat-swap "anonymous seat" path.
+      return (window.crypto && typeof window.crypto.randomUUID === 'function')
+        ? window.crypto.randomUUID()
+        : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+    }
+  }
+  const clientId = getOrCreateClientId();
 
   const params = new URLSearchParams(location.search);
   const room = params.get('room') || 'gym';
@@ -335,7 +362,7 @@
   // away on pan; auto-framing is separately HELD.
   const AF_FORCE_FALLBACK = { t: true, p: false };
   let afInvUnconfirmed = false;  // set true when an unrecognised camera is adopted
-  console.log('[build] index-autoframe-family Guarantee-A-orderkey 2026-08-01 — inv=' +
+  console.log('[build] index-seatswap-v2 2026-09-22 — inv=' +
     (params.get('inv') || '(none)') + (AF_FORCE_MODE ? ' (order-keyed: index0=Door, index1=Rack)' : ''));
 
   // Google's public STUN servers — free, no signup, fine for most home networks.
@@ -376,7 +403,12 @@
   let pc = null;
   let ws = null;
   let inCall = false;
-  let roomFull = false; // set on server 'full' -- stops the auto-reconnect loop from re-grabbing the room
+  let roomFull = false; // set on server 'full' -- gates the room-busy retry loop below
+  let roomFullRetryTimer = null; // SEAT-SWAP MODULE: retry-every-15s timer while room-busy
+  let roomFullDeadline = 0; // SEAT-SWAP MODULE: Date.now() cutoff — stop retrying after this
+  const ROOM_FULL_RETRY_MS = 15000; // SEAT-SWAP MODULE: retry cadence while room is busy
+  const ROOM_FULL_GIVE_UP_MS = 180000; // SEAT-SWAP MODULE: stop retrying after 3 minutes
+  let replaced = false; // SEAT-SWAP MODULE: set on server 'replaced' -- this tab was swapped out by our own reconnect elsewhere; never auto-retry
   let pendingCandidates = [];
   let amCaller = false; // only the caller initiates ICE restarts, to avoid both sides colliding
   let controlChannel = null; // CAMERA REMOTE SWITCH MODULE: data channel for cross-side camera control
@@ -516,7 +548,7 @@
 
   function wsUrl() {
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    return `${proto}//${location.host}?room=${encodeURIComponent(room)}`;
+    return `${proto}//${location.host}?room=${encodeURIComponent(room)}&cid=${encodeURIComponent(clientId)}`;
   }
 
   function connectSignaling() {
@@ -530,6 +562,13 @@
       const msg = JSON.parse(event.data);
 
       if (msg.type === 'joined') {
+        // SEAT-SWAP MODULE: being admitted at all means we were not turned
+        // away for a full room this time -- clear any room-busy backoff
+        // state left over from earlier retries.
+        roomFull = false;
+        roomFullDeadline = 0;
+        clearTimeout(roomFullRetryTimer);
+        roomFullRetryTimer = null;
         if (msg.peers === 2) {
           amCaller = true;
           await createPeerConnection();
@@ -558,29 +597,76 @@
         setStatus('Other side disconnected', 'warn');
         setPlaceholder('Call ended', 'The other side left. Tap Start Call to begin a new session.', true);
         teardownPeerConnection();
-      } else if (msg.type === 'full') {
-        // Stand DOWN, do not retry. Being turned away means two LIVE
-        // connections already hold this room (often our own stale tabs).
-        // The old code left inCall=true, so ws.onclose below reconnected
-        // every 2s forever and re-grabbed any slot the instant it freed.
-        // Reset to idle: the only way back in is a deliberate Start Call.
-        roomFull = true;
+      } else if (msg.type === 'replaced') {
+        // SEAT-SWAP MODULE: the server saw another connection with this same
+        // device's clientId join this room (our own reconnect, a refresh, or
+        // another tab/window here) and evicted this socket's seat in its
+        // favor. Stand DOWN, do not retry -- retrying would just evict that
+        // new occupant right back, and the two could ping-pong forever.
+        replaced = true;
         inCall = false;
         callBtn.textContent = 'Start Call';
         callBtn.classList.remove('end');
-        setStatus('Room already has two people', 'bad');
-        setPlaceholder('Call already in progress', 'This link is already open on two devices. Close any other Training Call tab or window, then tap Start Call.', true);
+        // Close the old pc BEFORE the final setStatus below. Left open, it
+        // keeps running its own lifecycle (the far side is gone, so it drifts
+        // to 'disconnected' then 'failed' on its own timeline) and its
+        // onconnectionstatechange handler would overwrite "Call moved" with
+        // "Connection wobbling…" / "Connection lost — reconnecting…" minutes
+        // later, plus attemptIceRestart() would fire pointlessly. teardown
+        // also clears disconnectTimer so that queued restart never runs.
+        teardownPeerConnection();
+        // Release the camera/mic and clear the local preview -- this tab is
+        // no longer part of any call, so it has no business holding the
+        // devices. startLocalStream() re-acquires them from scratch the next
+        // time this tab's Start Call is pressed (startCallFlow() only calls
+        // it when localStream is null).
+        if (localStream) {
+          localStream.getTracks().forEach((t) => t.stop());
+          localStream = null;
+        }
+        localVideo.srcObject = null;
+        setStatus('Taken over by another window', 'warn');
+        setPlaceholder('Call moved', 'This call was taken over by another window or reconnect on this device. Tap Start Call here only if you want to use this window instead.', true);
+      } else if (msg.type === 'full') {
+        // SEAT-SWAP MODULE: a full room is often a stale seat that just
+        // hasn't been cleaned up yet (heartbeat sweep, or the other side's
+        // own reconnect still in flight) rather than a permanent state, so
+        // retry for a few minutes before giving up. roomFull=true blocks the
+        // generic ws.onclose retry below; this dedicated timer drives retries
+        // at a slower, deliberate cadence instead of hammering the server.
+        roomFull = true;
+        if (!roomFullDeadline) roomFullDeadline = Date.now() + ROOM_FULL_GIVE_UP_MS;
+        clearTimeout(roomFullRetryTimer);
+        if (Date.now() >= roomFullDeadline) {
+          inCall = false;
+          roomFullRetryTimer = null;
+          callBtn.textContent = 'Start Call';
+          callBtn.classList.remove('end');
+          setStatus('Room already has two people', 'bad');
+          setPlaceholder('Call already in progress', 'This link is already open on two devices. Close any other Training Call tab or window, then tap Start Call.', true);
+        } else {
+          setStatus('Room busy — retrying…', 'warn');
+          setPlaceholder('Room busy', 'This link is already open on two devices. Retrying automatically…', true);
+          roomFullRetryTimer = setTimeout(() => {
+            if (inCall && roomFull) connectSignaling();
+          }, ROOM_FULL_RETRY_MS);
+        }
       }
     };
 
     ws.onclose = () => {
-      if (inCall && !roomFull) {
+      if (inCall && !roomFull && !replaced) {
         setStatus('Signaling lost — retrying…', 'bad');
-        setTimeout(() => { if (inCall && !roomFull) connectSignaling(); }, 2000);
+        setTimeout(() => { if (inCall && !roomFull && !replaced) connectSignaling(); }, 2000);
       }
     };
 
     ws.onerror = () => {
+      // SEAT-SWAP MODULE: once this tab has been replaced, its status is
+      // final ("Call moved") -- don't let a trailing socket-error event
+      // (the server closing this socket right after 'replaced' can trigger
+      // one in some browsers) overwrite it.
+      if (replaced) return;
       setStatus('Connection error', 'bad');
     };
   }
@@ -694,6 +780,10 @@
   async function startCallFlow() {
     if (inCall) return;
     roomFull = false; // a deliberate Start Call clears any prior room-full stand-down
+    roomFullDeadline = 0; // SEAT-SWAP MODULE: fresh 3-minute room-busy budget on each deliberate Start Call
+    clearTimeout(roomFullRetryTimer);
+    roomFullRetryTimer = null;
+    replaced = false; // SEAT-SWAP MODULE: a deliberate Start Call clears any prior seat-swap stand-down
     inCall = true;
     callBtn.textContent = 'End Call';
     callBtn.classList.add('end');
@@ -711,6 +801,8 @@
 
   function endCallFlow() {
     inCall = false;
+    clearTimeout(roomFullRetryTimer); // SEAT-SWAP MODULE: a manual End Call also cancels any pending room-busy retry
+    roomFullRetryTimer = null;
     callBtn.textContent = 'Start Call';
     callBtn.classList.remove('end');
     teardownPeerConnection();

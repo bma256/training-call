@@ -55,21 +55,55 @@ function send(ws, msg) {
 
 wss.on('connection', (ws, req) => {
   let room = 'gym-session';
+  let cid = null;
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
     room = url.searchParams.get('room') || room;
+    // SEAT-SWAP MODULE: optional client identity, used only to recognize a
+    // client's own reconnect. Strictly validated allowlist — missing or
+    // malformed cid means no identity, and behavior is identical to before
+    // this module existed (pure anonymous-seat counting).
+    const rawCid = url.searchParams.get('cid');
+    if (rawCid && /^[A-Za-z0-9-]{1,64}$/.test(rawCid)) {
+      cid = rawCid;
+    }
   } catch (e) {
-    // fall back to default room name
+    // fall back to default room name / no identity
   }
+  const cidTag = cid ? cid.slice(0, 8) : '-';
 
   if (!rooms.has(room)) rooms.set(room, new Set());
   const peers = rooms.get(room);
+
+  // ===== SEAT-SWAP MODULE ====================================================
+  // If a socket already holding a seat in this room carries the same cid as
+  // this incoming connection, treat this as that same client reconnecting
+  // (dropped Wi-Fi, a page refresh, a relaunch) rather than a second,
+  // competing device. Evict the old seat synchronously, BEFORE the capacity
+  // check below, so a reconnect is never turned away by its own stale seat.
+  // The remaining peer is told 'peer-left' right here — before the capacity
+  // check and normal admission below tell it 'peer-joined' — so it always
+  // observes left-then-joined in that order, never the reverse.
+  if (cid) {
+    for (const old of peers) {
+      if (old.cid === cid) {
+        peers.delete(old);
+        old.replaced = true;
+        console.log(`[${new Date().toISOString()}] REPLACED room="${room}" cid=${cidTag} (stale seat evicted by reconnect)`);
+        send(old, { type: 'replaced' });
+        old.close();
+        peers.forEach((peer) => send(peer, { type: 'peer-left' }));
+        break; // a cid holds at most one live seat at a time
+      }
+    }
+  }
+  // ===== SEAT-SWAP MODULE END =================================================
 
   if (peers.size >= 2) {
     // DIAGNOSTIC LOGGING: shows up in Render's log viewer whenever someone
     // gets turned away, so we can tell whether the room really has 2 live
     // people or is holding onto a stale slot.
-    console.log(`[${new Date().toISOString()}] REJECTED (room full) room="${room}" currentPeers=${peers.size}`);
+    console.log(`[${new Date().toISOString()}] REJECTED (room full) room="${room}" cid=${cidTag} currentPeers=${peers.size}`);
     send(ws, { type: 'full' });
     ws.close();
     return;
@@ -77,7 +111,8 @@ wss.on('connection', (ws, req) => {
 
   peers.add(ws);
   ws.roomId = room;
-  console.log(`[${new Date().toISOString()}] JOINED room="${room}" peers=${peers.size}`);
+  ws.cid = cid;
+  console.log(`[${new Date().toISOString()}] JOINED room="${room}" cid=${cidTag} peers=${peers.size}`);
 
   // HEARTBEAT MODULE: mark this connection alive, and refresh that mark
   // whenever a pong comes back (browsers answer pings automatically).
@@ -107,8 +142,15 @@ wss.on('connection', (ws, req) => {
   });
 
   ws.on('close', () => {
+    // SEAT-SWAP MODULE: a socket the seat-swap eviction above already closed
+    // (ws.replaced) or already removed from the Set was handled there — its
+    // 'peer-left' was already sent as part of that swap. Firing this normal
+    // close path for it too would double-send 'peer-left' and could delete
+    // the *new* occupant's seat if it happens to still be the same object
+    // reference in a stale closure. Do nothing for it here.
+    if (ws.replaced || !peers.has(ws)) return;
     peers.delete(ws);
-    console.log(`[${new Date().toISOString()}] LEFT room="${room}" remainingPeers=${peers.size}`);
+    console.log(`[${new Date().toISOString()}] LEFT room="${room}" cid=${cidTag} remainingPeers=${peers.size}`);
     peers.forEach((peer) => send(peer, { type: 'peer-left' }));
     if (peers.size === 0) rooms.delete(room);
   });

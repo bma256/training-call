@@ -362,7 +362,7 @@
   // away on pan; auto-framing is separately HELD.
   const AF_FORCE_FALLBACK = { t: true, p: false };
   let afInvUnconfirmed = false;  // set true when an unrecognised camera is adopted
-  console.log('[build] index-seatswap-v2 2026-09-22 — inv=' +
+  console.log('[build] index-affix 2026-09-24 — inv=' +
     (params.get('inv') || '(none)') + (AF_FORCE_MODE ? ' (order-keyed: index0=Door, index1=Rack)' : ''));
 
   // Google's public STUN servers — free, no signup, fine for most home networks.
@@ -450,6 +450,10 @@
   }
 
   async function listDevices() {
+    // AF DIAGNOSTIC LOGGER: log-only -- distinguish the init call (no args)
+    // from an ondevicechange-triggered call (browser passes the Event as the
+    // first arg) without touching either call site below.
+    const afdiagListReason = (arguments.length && arguments[0] && arguments[0].type === 'devicechange') ? 'devicechange' : 'init';
     const devices = await navigator.mediaDevices.enumerateDevices();
     const prevCam = cameraSelect.value || localStorage.getItem(LS_CAMERA);
     const prevMic = micSelect.value || localStorage.getItem(LS_MIC);
@@ -476,6 +480,15 @@
     if (prevMic && [...micSelect.options].some((o) => o.value === prevMic)) micSelect.value = prevMic;
     relabelCameraOptions(); // CAMERA NAMING MODULE: apply any saved custom camera names
     sendCameraList(); // CAMERA REMOTE SWITCH MODULE: let the other side know our current camera options
+    // AF DIAGNOSTIC LOGGER: log-only -- full camera list + why this run
+    // happened, so a "disappears from switcher" incident shows exactly what
+    // enumerateDevices returned and whether it was init or a devicechange.
+    try {
+      const afdiagCamList = [...cameraSelect.options]
+        .map((o) => (o.textContent || '(no label)') + ' [' + (o.value || '').slice(0, 8) + ']')
+        .join(', ');
+      afdiag('listDevices (' + afdiagListReason + ') — ' + camCount + ' camera(s): ' + (afdiagCamList || 'none'));
+    } catch (e) {}
   }
 
   async function startLocalStream() {
@@ -1503,6 +1516,15 @@
   const AF_MIN_CMD = 900;
   const AF_VIS_MIN = 0.5;   // 0.25° — below this a command isn't worth a round trip
   const AF_TORSO = [11, 12, 23, 24];
+  // ---- AFFIX: solid-lock, tilt-down cap, and HOME constants --------------
+  const AF_LOCK_N = 3;              // consecutive good-visibility frames required for a "solid lock"
+  const AF_TILT_MAX_DOWN = 70;      // ° — soft cap on top of the camera's own hardware limit (both cameras). Door: positive tilt = down.
+  const AF_LS_HOME = 'afHome_v1';   // per-deviceId saved home, same pattern as AF_LS_INV
+  const AF_HOME_TILT_DEFAULT = 30;  // ° down — DOOR-ONLY built-in default (door: positive tilt = down)
+  const AF_HOME_PAN_DEFAULT = 0;    // ° — DOOR-ONLY built-in default
+  // Rack has no built-in default: until a home is explicitly saved for its
+  // deviceId, rack recovery falls back to literal 0/0 (today's behaviour),
+  // set inside afLoadHome() below.
 
   // v13 validated defaults, carried forward verbatim from the bench.
   const AF_DEFAULTS = {
@@ -1519,7 +1541,9 @@
   let afWant = { tilt: null, pan: null };
   let afCurTilt = 0, afCurPan = 0;
   let afSmX = null, afSmY = null;
-  let afLostSince = 0, afRecentred = false;
+  // AFFIX: solid-lock + HOME state, replacing the old afLostSince/afRecentred pair.
+  let afSolidCount = 0, afLocked = false, afLastLockedAt = 0, afHomed = false, afHadLms = false;
+  let afHomeTilt = 0, afHomePan = 0; // resolved per-camera by afLoadHome() -- 0/0 until then
   let afPanelOpen = false;
   let afLastResult = null;
 
@@ -1531,6 +1555,147 @@
     peakT: 0, peakP: 0, errs: 0, lost: 0,
     vis: null
   };
+
+  // ===== AF DIAGNOSTIC LOGGER: JS START ===================================
+  // Persistent, LOG-ONLY diagnostic logger for the door-camera "tilts down
+  // and stays down" / "disappears from switcher" investigation. Read-only
+  // with respect to the app: it never changes what auto-framing, PTZ, or the
+  // camera switcher do -- it only observes and records. Every write is
+  // wrapped in try/catch so a logging failure (including a localStorage
+  // quota error) can never affect the call. NOT cleared on page load --
+  // survives reloads and launcher relaunches, since the incident is usually
+  // followed by one; only the Clear button below empties it. Writes are
+  // batched (flushed on a 1s timer) so a busy period never means a
+  // JSON.stringify of the whole buffer on every call.
+  const AFDIAG_LS_LOG = 'afDiag:log_v1';
+  const AFDIAG_MAX_LINES = 5000;   // ring buffer cap -- oldest lines drop first
+  const AFDIAG_FLUSH_MS = 1000;    // batched writes -- never stringify per line
+  let afdiagBuf = [];              // lines already persisted this load
+  let afdiagPending = [];          // lines written since the last flush
+  let afdiagLastSummarySig = null;
+  let afdiagLastHeartbeatAt = 0;    // AFFIX: wall-clock ms of the last summary/heartbeat line
+
+  function afdiagRoleLabel() {
+    try {
+      if (!afOpenDeviceId) return '—';
+      if (!AF_FORCE_MODE) return 'unforced';
+      const hit = afRoleFor(afOpenDeviceId);
+      return hit ? hit.role.toLowerCase() : 'unrecognised';
+    } catch (e) { return '?'; }
+  }
+
+  function afdiagLoad() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(AFDIAG_LS_LOG) || '[]');
+      afdiagBuf = Array.isArray(raw) ? raw : [];
+    } catch (e) { afdiagBuf = []; }
+  }
+
+  function afdiagFlush() {
+    try {
+      if (!afdiagPending.length) return;
+      afdiagBuf = afdiagBuf.concat(afdiagPending);
+      afdiagPending = [];
+      if (afdiagBuf.length > AFDIAG_MAX_LINES) {
+        afdiagBuf = afdiagBuf.slice(afdiagBuf.length - AFDIAG_MAX_LINES);
+      }
+      localStorage.setItem(AFDIAG_LS_LOG, JSON.stringify(afdiagBuf));
+    } catch (e) { /* quota or serialization failure -- never let logging break the app */ }
+  }
+
+  function afdiag(msg) {
+    try {
+      const line = new Date().toISOString() + ' [' + afdiagRoleLabel() + '] ' + msg;
+      afdiagPending.push(line);
+      // Guard against an unbounded burst piling up between flushes.
+      if (afdiagPending.length > AFDIAG_MAX_LINES) {
+        afdiagPending = afdiagPending.slice(afdiagPending.length - AFDIAG_MAX_LINES);
+      }
+    } catch (e) { /* never let a logging failure affect the call */ }
+  }
+
+  function afdiagTrackLabel(t) {
+    try {
+      if (!t) return '(no track)';
+      const st = t.getSettings ? t.getSettings() : {};
+      const id = (st.deviceId || t.id || '').slice(0, 8);
+      let role = 'unforced';
+      if (AF_FORCE_MODE) {
+        const hit = afRoleFor(st.deviceId);
+        role = hit ? hit.role.toLowerCase() : 'unrecognised';
+      }
+      return role + ' ' + id;
+    } catch (e) { return '?'; }
+  }
+
+  function afdiagAttachTrackListeners(t) {
+    if (!t) return;
+    try {
+      const label = afdiagTrackLabel(t);
+      const onEnded = () => afdiag('track ENDED (' + label + ')');
+      const onMute = () => afdiag('track MUTE (' + label + ')');
+      const onUnmute = () => afdiag('track UNMUTE (' + label + ')');
+      t.addEventListener('ended', onEnded);
+      t.addEventListener('mute', onMute);
+      t.addEventListener('unmute', onUnmute);
+      t.__afdiagListeners = { onEnded, onMute, onUnmute };
+    } catch (e) {}
+  }
+
+  function afdiagDetachTrackListeners(t) {
+    if (!t || !t.__afdiagListeners) return;
+    try {
+      t.removeEventListener('ended', t.__afdiagListeners.onEnded);
+      t.removeEventListener('mute', t.__afdiagListeners.onMute);
+      t.removeEventListener('unmute', t.__afdiagListeners.onUnmute);
+      delete t.__afdiagListeners;
+    } catch (e) {}
+  }
+
+  function afdiagSummaryTick() {
+    try {
+      const el = localVideo;
+      const nowWall = Date.now();
+      // AFFIX: signature is built from state that only changes at meaningful
+      // moments (lock, position, counters, video) -- no ticking elapsed-time
+      // field, so idle/unchanged periods produce nothing but the 30s heartbeat.
+      const sig = JSON.stringify({
+        framing: afFraming,
+        locked: afLocked,
+        unconfirmed: afInvUnconfirmed,
+        dev: afOpenDeviceId,
+        ready: el ? el.readyState : null,
+        vidW: el ? el.videoWidth : null,
+        posT: Math.round(afCurTilt / AF_U),
+        posP: Math.round(afCurPan / AF_U),
+        lost: afM.lost, clamp: afM.clamp.tilt + afM.clamp.pan, sup: afM.sup.tilt + afM.sup.pan, errs: afM.errs
+      });
+      const stateChanged = sig !== afdiagLastSummarySig;
+      const heartbeatDue = (nowWall - afdiagLastHeartbeatAt) >= 30000;
+      if (!stateChanged && !heartbeatDue) return; // ticking alone is not a change -- don't fill the buffer
+      afdiagLastSummarySig = sig;
+      afdiagLastHeartbeatAt = nowWall;
+      const vis = (afLocked && afM.vis) ? (afM.vis.mean.toFixed(2) + '/' + afM.vis.min.toFixed(2)) : '—';
+      afdiag((stateChanged ? 'summary' : 'heartbeat') + ' — framing=' + afFraming +
+        ' locked=' + afLocked +
+        ' pos T' + (afCurTilt / AF_U).toFixed(0) + '°/P' + (afCurPan / AF_U).toFixed(0) + '°' +
+        ' vis(mean/min)=' + vis +
+        ' unconfirmed=' + afInvUnconfirmed +
+        ' video(ready=' + (el ? el.readyState : '—') + ',w=' + (el ? el.videoWidth : '—') + ')' +
+        ' counts(lost=' + afM.lost + ',clamp=' + (afM.clamp.tilt + afM.clamp.pan) + ',sup=' + (afM.sup.tilt + afM.sup.pan) + ',errs=' + afM.errs + ')');
+    } catch (e) {}
+  }
+
+  afdiagLoad();
+  setInterval(afdiagFlush, AFDIAG_FLUSH_MS);
+  setInterval(afdiagSummaryTick, 1000);
+  try { window.addEventListener('pagehide', afdiagFlush); } catch (e) {}
+  try { window.addEventListener('beforeunload', afdiagFlush); } catch (e) {}
+
+  afdiag('PAGE LOAD — [build] index-affix 2026-09-24 — inv=' +
+    (params.get('inv') || '(none)') +
+    (AF_FORCE_MODE ? ' (order-keyed: index0=Door, index1=Rack)' : ''));
+  // ===== AF DIAGNOSTIC LOGGER: JS END =======================================
 
   // ---- panel -------------------------------------------------------------
   const afStyle = document.createElement('style');
@@ -1584,6 +1749,10 @@
     <div class="row"><span>PTZ</span><span id="afPtz">—</span></div>
     <button id="afGo" class="go" disabled>▶ Start auto-framing</button>
     <button id="afCenter">Centre both axes</button>
+    <button id="afSetHome">Set home = current position</button>
+    <button id="afResetHome">Reset home</button>
+    <div class="row"><span>Home (T/P)</span><span id="afHomeVal">—</span></div>
+    <div class="row"><span>Lock</span><span id="afLock">—</span></div>
     <canvas id="afPrev" width="300" height="169"></canvas>
     <div class="row"><span>Video</span><span id="afFps">—</span></div>
     <div class="row"><span>Detect</span><span id="afDet">—</span></div>
@@ -1611,6 +1780,72 @@
     <div id="afLog"></div>
   `;
   document.body.appendChild(afPanel);
+
+  // AF DIAGNOSTIC LOGGER: export/clear controls, appended to the existing
+  // Advanced panel without touching its template above. The text box is the
+  // guaranteed retrieval path (select + copy); the download button is a
+  // bonus that may silently fail under the launcher's bwrap sandbox.
+  const afdiagSection = document.createElement('div');
+  afdiagSection.innerHTML = `
+    <hr>
+    <h4>Diagnostic Log</h4>
+    <button id="afdiagExportBtn">Export log to box below</button>
+    <button id="afdiagDownloadBtn">Download log (.txt)</button>
+    <button id="afdiagClearBtn">Clear log</button>
+    <textarea id="afdiagBox" readonly rows="8"
+      style="width:100%;margin-top:6px;box-sizing:border-box;font:11px/1.3 ui-monospace,monospace;
+      background:#0c0e12;color:#dfe6ee;border:1px solid #2b313c;border-radius:6px;"></textarea>
+  `;
+  afPanel.appendChild(afdiagSection);
+
+  function afdiagAllLines() {
+    try { afdiagFlush(); return afdiagBuf.join('\n'); }
+    catch (e) { return '(log unavailable: ' + (e && e.message) + ')'; }
+  }
+
+  const afdiagExportBtn = document.getElementById('afdiagExportBtn');
+  const afdiagDownloadBtn = document.getElementById('afdiagDownloadBtn');
+  const afdiagClearBtn = document.getElementById('afdiagClearBtn');
+  const afdiagBox = document.getElementById('afdiagBox');
+
+  if (afdiagExportBtn) {
+    afdiagExportBtn.addEventListener('click', () => {
+      try {
+        afdiagBox.value = afdiagAllLines();
+        afdiagBox.focus();
+        afdiagBox.select();
+      } catch (e) {}
+    });
+  }
+  if (afdiagDownloadBtn) {
+    afdiagDownloadBtn.addEventListener('click', () => {
+      try {
+        const text = afdiagAllLines();
+        const blob = new Blob([text], { type: 'text/plain' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'afdiag-log-' + new Date().toISOString().replace(/[:.]/g, '-') + '.txt';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => { try { URL.revokeObjectURL(url); } catch (e) {} }, 5000);
+      } catch (e) {
+        try { afdiagBox.value = 'Download failed (' + e.message + ') — use "Export log to box below" instead.'; } catch (e2) {}
+      }
+    });
+  }
+  if (afdiagClearBtn) {
+    afdiagClearBtn.addEventListener('click', () => {
+      try {
+        afdiagBuf = [];
+        afdiagPending = [];
+        localStorage.removeItem(AFDIAG_LS_LOG);
+        afdiagBox.value = '';
+        afdiag('log CLEARED by user');
+      } catch (e) {}
+    });
+  }
 
   const afQ = (id) => document.getElementById(id);
   const afPrev = afQ('afPrev'), afPrevCtx = afPrev.getContext('2d');
@@ -1702,6 +1937,7 @@
         afQ('afInvSaved').textContent = 'forced (' + hit.role + '): tilt ' + (hit.t ? 'ON' : 'OFF') + '/pan ' + (hit.p ? 'ON' : 'OFF');
         afQ('afInvSaved').className = 'af-ok';
         afLog('Inverts forced per-camera (' + hit.role + ', ' + (afOpenDeviceId || '').slice(0, 8) + '): tilt ' + (hit.t ? 'ON' : 'OFF') + ', pan ' + (hit.p ? 'ON' : 'OFF') + ' — localStorage skipped.', 'af-ok');
+        try { afdiag('inverts forced (recognised, ' + hit.role.toLowerCase() + '): tilt ' + (hit.t ? 'ON' : 'OFF') + ' pan ' + (hit.p ? 'ON' : 'OFF')); } catch (e2) {}
       } else {
         // UNRECOGNISED camera — deviceId not in the baked map (replug shuffle or a
         // third camera). Force pan OFF (non-runaway) and HOLD auto-framing until a
@@ -1715,6 +1951,7 @@
         afQ('afInvSaved').textContent = 'UNRECOGNISED cam ' + (afOpenDeviceId || '').slice(0, 8) + ' — auto-framing HELD; confirm inverts';
         afQ('afInvSaved').className = 'af-warn';
         afLog('Unrecognised camera ' + (afOpenDeviceId || '').slice(0, 8) + ' at index ' + afCameraIndex(afOpenDeviceId) + ' — expected exactly two (index0=Door, index1=Rack) from the remap launcher. Pan forced OFF and auto-framing HELD (safe). If you see this, the launcher did not pin both cameras: relaunch via the icon, or confirm inverts by hand to enable.', 'af-warn');
+        try { afdiag('UNRECOGNISED camera adopted (index ' + afCameraIndex(afOpenDeviceId) + ') — auto-framing HELD, pan forced OFF'); } catch (e2) {}
       }
       return;
     }
@@ -1754,6 +1991,7 @@
         afQ('afInvSaved').textContent = 'confirmed by hand for ' + (afOpenDeviceId || '').slice(0, 8);
         afQ('afInvSaved').className = 'af-ok';
         afLog('Inverts confirmed by hand — auto-framing enabled for ' + (afOpenDeviceId || '').slice(0, 8) + '.', 'af-ok');
+        try { afdiag('inverts confirmed by hand — hold released'); } catch (e2) {}
       }
     });
   });
@@ -1795,7 +2033,22 @@
   // ---- motor command queue (ported from v13) -----------------------------
   function afClamp(axis, v) {
     const c = afCaps[axis];
-    return Math.max(c.min, Math.min(c.max, Math.round(v)));
+    const requested = Math.round(v);
+    let out = Math.max(c.min, Math.min(c.max, requested));
+    // AFFIX (fix D): soft down-cap on top of the camera's own hardware limit,
+    // logged at the point of decision -- this is why the old post-hoc "clamped
+    // at limit" check in afPump could never fire for a normal, working clamp:
+    // afClamp already trimmed the value before it was ever sent.
+    if (axis === 'tilt') {
+      const capUnits = Math.round(AF_TILT_MAX_DOWN * AF_U);
+      if (out > capUnits) {
+        const hwClamped = out;
+        out = capUnits;
+        afLog('tilt DOWN-CAPPED at ' + AF_TILT_MAX_DOWN + '° (requested ' + (requested / AF_U).toFixed(0) + '°, hw limit ' + (hwClamped / AF_U).toFixed(0) + '°).', 'af-warn');
+        try { afdiag('tilt DOWN-CAPPED at ' + AF_TILT_MAX_DOWN + '° (requested ' + (requested / AF_U).toFixed(1) + '°, hw-clamped ' + (hwClamped / AF_U).toFixed(1) + '°)'); } catch (e) {}
+      }
+    }
+    return out;
   }
   function afQueue(axis, val) {
     if (afWant[axis] !== null) afM.sup[axis]++;
@@ -1823,12 +2076,17 @@
           afLog(axis + ' clamped at limit (asked ' + (val / AF_U).toFixed(0) + '°, got ' + (rep / AF_U).toFixed(0) + '°).', 'af-warn');
         }
       }
+      try {
+        afdiag('PTZ ' + axis + ' -> ' + (val / AF_U).toFixed(1) + '° (reported ' + (rep / AF_U).toFixed(1) + '°)' +
+          (Math.abs(rep - val) > AF_U / 2 ? ' CLAMPED' : ''));
+      } catch (e2) {}
       const moved = Math.abs(rep - before) / AF_U;
       if (axis === 'tilt') { afCurTilt = rep; if (moved > afM.peakT) afM.peakT = moved; }
       else { afCurPan = rep; if (moved > afM.peakP) afM.peakP = moved; }
     } catch (e) {
       afM.errs++;
       afLog('applyConstraints: ' + e.message, 'af-err');
+      try { afdiag('PTZ ' + axis + ' -> ' + (val / AF_U).toFixed(1) + '° FAILED: ' + (e && e.message)); } catch (e2) {}
     } finally {
       afCmdInFlight = false;
     }
@@ -1842,6 +2100,102 @@
   }
   afQ('afCenter').addEventListener('click', () => { afCenterBoth(); afLog('Centred.'); });
 
+  // ---- AFFIX (fix E): resync cached position from the camera's actual -----
+  // reported settings before trusting it for a drive computation. Fixes the
+  // "external recentre gets silently overridden back" failure -- the old code
+  // only ever updated afCurTilt/afCurPan from OUR OWN command replies.
+  function afSyncActualPosition() {
+    if (!afTrack || !afTrack.getSettings) return;
+    try {
+      const st = afTrack.getSettings();
+      if (typeof st.tilt === 'number') {
+        const diff = Math.abs(st.tilt - afCurTilt) / AF_U;
+        if (diff > 2) {
+          afLog('tilt drifted: cached ' + (afCurTilt / AF_U).toFixed(0) + '°, actual ' + (st.tilt / AF_U).toFixed(0) + '° — resyncing.', 'af-warn');
+          try { afdiag('tilt drift ' + diff.toFixed(1) + '° (cached ' + (afCurTilt / AF_U).toFixed(0) + '° -> actual ' + (st.tilt / AF_U).toFixed(0) + '°) — resynced'); } catch (e2) {}
+        }
+        afCurTilt = st.tilt;
+      }
+      if (typeof st.pan === 'number') {
+        const diff = Math.abs(st.pan - afCurPan) / AF_U;
+        if (diff > 2) {
+          afLog('pan drifted: cached ' + (afCurPan / AF_U).toFixed(0) + '°, actual ' + (st.pan / AF_U).toFixed(0) + '° — resyncing.', 'af-warn');
+          try { afdiag('pan drift ' + diff.toFixed(1) + '° (cached ' + (afCurPan / AF_U).toFixed(0) + '° -> actual ' + (st.pan / AF_U).toFixed(0) + '°) — resynced'); } catch (e2) {}
+        }
+        afCurPan = st.pan;
+      }
+    } catch (e) {}
+  }
+
+  // ---- AFFIX (fix C): per-camera HOME, replacing 0/0 as the recovery target
+  // Door gets a built-in default (30° down / 0° pan); RACK GETS NO DEFAULT --
+  // until a home is explicitly saved for its deviceId, rack recovery keeps
+  // today's behaviour (literal 0/0), same as afCenterBoth() above.
+  function afHomeStore() {
+    try { return JSON.parse(localStorage.getItem(AF_LS_HOME) || '{}'); } catch (e) { return {}; }
+  }
+  function afPaintHome() {
+    try {
+      const el = afQ('afHomeVal');
+      if (el) el.textContent = afHomeTilt.toFixed(0) + '° / ' + afHomePan.toFixed(0) + '°';
+    } catch (e) {}
+  }
+  function afLoadHome() {
+    afHomeTilt = 0; afHomePan = 0; // fallback: today's behaviour until a home is known
+    if (afOpenDeviceId) {
+      const s = afHomeStore()[afOpenDeviceId];
+      if (s && typeof s.tilt === 'number' && typeof s.pan === 'number') {
+        afHomeTilt = s.tilt; afHomePan = s.pan;
+        afPaintHome();
+        return;
+      }
+    }
+    // No saved home for this camera -- only a recognised DOOR gets the
+    // built-in non-zero default. Rack (or unrecognised/unforced) stays 0/0.
+    if (AF_FORCE_MODE) {
+      const hit = afRoleFor(afOpenDeviceId);
+      if (hit && hit.role === 'Door') {
+        afHomeTilt = AF_HOME_TILT_DEFAULT;
+        afHomePan = AF_HOME_PAN_DEFAULT;
+      }
+    }
+    afPaintHome();
+  }
+  function afSaveHomeCurrent() {
+    if (!afOpenDeviceId || !afTrack) { afLog('No camera adopted — cannot set home.', 'af-warn'); return; }
+    afSyncActualPosition();
+    afHomeTilt = afCurTilt / AF_U;
+    afHomePan = afCurPan / AF_U;
+    try {
+      const s = afHomeStore();
+      s[afOpenDeviceId] = { tilt: afHomeTilt, pan: afHomePan };
+      localStorage.setItem(AF_LS_HOME, JSON.stringify(s));
+    } catch (e) {}
+    afPaintHome();
+    afLog('Home set to current position: tilt ' + afHomeTilt.toFixed(0) + '°, pan ' + afHomePan.toFixed(0) + '° (' + (afOpenDeviceId || '').slice(0, 8) + ').', 'af-ok');
+    try { afdiag('home SET (' + afHomeTilt.toFixed(0) + '°/' + afHomePan.toFixed(0) + '°)'); } catch (e2) {}
+  }
+  function afResetHome() {
+    if (afOpenDeviceId) {
+      try {
+        const s = afHomeStore();
+        delete s[afOpenDeviceId];
+        localStorage.setItem(AF_LS_HOME, JSON.stringify(s));
+      } catch (e) {}
+    }
+    afLoadHome(); // re-derive: door default, or 0/0 for rack/unrecognised
+    afLog('Home reset for ' + (afOpenDeviceId || '').slice(0, 8) + ': tilt ' + afHomeTilt.toFixed(0) + '°, pan ' + afHomePan.toFixed(0) + '°.', 'af-ok');
+    try { afdiag('home RESET (' + afHomeTilt.toFixed(0) + '°/' + afHomePan.toFixed(0) + '°)'); } catch (e2) {}
+  }
+  function afGoHome() {
+    if (!afTrack || !afCaps) return;
+    if (afCaps.tilt) afQueue('tilt', afClamp('tilt', afHomeTilt * AF_U));
+    if (afCaps.pan) afQueue('pan', afClamp('pan', afHomePan * AF_U));
+    afSmX = afSmY = null;
+  }
+  afQ('afSetHome').addEventListener('click', () => { afSaveHomeCurrent(); });
+  afQ('afResetHome').addEventListener('click', () => { afResetHome(); });
+
   afQ('afGo').addEventListener('click', () => {
     if (!afTrack) { afLog('No camera track yet.', 'af-warn'); return; }
     afFraming = !afFraming;
@@ -1849,7 +2203,7 @@
     afQ('afGo').className = afFraming ? '' : 'go';
     afToggle.classList.toggle('live', afFraming);
     afToggle.textContent = afFraming ? 'Advanced ●' : 'Advanced';
-    afSmX = afSmY = null; afLostSince = 0; afRecentred = false;
+    afSmX = afSmY = null; afSolidCount = 0; afLocked = false; afLastLockedAt = performance.now(); afHomed = false; afHadLms = false;
     afLog(afFraming ? 'Auto-framing ON.' : 'Auto-framing OFF.', afFraming ? 'af-ok' : 'af-warn');
   });
 
@@ -1869,7 +2223,7 @@
     afQ('afGo').className = '';
     afToggle.classList.add('live');
     afToggle.textContent = 'Advanced ●';
-    afSmX = afSmY = null; afLostSince = 0; afRecentred = false;
+    afSmX = afSmY = null; afSolidCount = 0; afLocked = false; afLastLockedAt = performance.now(); afHomed = false; afHadLms = false;
     afLog('Auto-framing ON (auto-started: ' + reason + ').', 'af-ok');
   }
 
@@ -1883,11 +2237,18 @@
 
   // ---- track adoption ----------------------------------------------------
   async function afAdoptTrack(t) {
+    // AF DIAGNOSTIC LOGGER: log-only track lifecycle listeners -- detach from
+    // the outgoing track, adopt as before, attach to the incoming one. Never
+    // changes what auto-framing does with the track; only observes
+    // ended/mute/unmute, which is our best signal for a camera that vanishes
+    // mid-session without a full device-list change.
+    afdiagDetachTrackListeners(afTrack);
     afTrack = t;
+    afdiagAttachTrackListeners(afTrack);
     afCaps = null; afOpenDeviceId = null;
     afWant = { tilt: null, pan: null };
     afCmdInFlight = false;
-    afSmX = afSmY = null; afLostSince = 0; afRecentred = false;
+    afSmX = afSmY = null; afSolidCount = 0; afLocked = false; afLastLockedAt = performance.now(); afHomed = false; afHadLms = false;
     if (afFraming) {
       afFraming = false;
       afQ('afGo').textContent = '▶ Start auto-framing';
@@ -1914,12 +2275,14 @@
 
     // Restore BEFORE the controls become usable — see afRestoreInv().
     afRestoreInv();
+    afLoadHome(); // AFFIX (fix C): per-camera home -- door default, rack stays 0/0 until set
 
     // Widest zoom on open: a wider frame is fewer losses (v14 item 3).
     if (afCaps.zoom && typeof afCaps.zoom.min === 'number') {
       try {
         await t.applyConstraints({ advanced: [{ zoom: afCaps.zoom.min }] });
         afLog('Zoom set to widest (' + afCaps.zoom.min + ').');
+        try { afdiag('PTZ zoom -> widest (' + afCaps.zoom.min + ')'); } catch (e2) {}
       } catch (e) { afLog('Zoom set failed: ' + e.message, 'af-warn'); }
     } else {
       afLog('No zoom capability reported on this unit.', 'af-warn');
@@ -1933,12 +2296,15 @@
       if (afInvUnconfirmed) {
         afQ('afGo').disabled = true;
         afLog('Camera ' + (afOpenDeviceId || '').slice(0, 8) + ' adopted but UNRECOGNISED — auto-framing held. Confirm inverts (toggle a checkbox) to enable.', 'af-warn');
+        try { afdiag('camera adopted but UNRECOGNISED — auto-framing held'); } catch (e2) {}
       } else {
         afLog('Camera ' + (afOpenDeviceId || '').slice(0, 8) + ' adopted. Tilt/pan available.', 'af-ok');
+        try { afdiag('camera adopted, tilt/pan available (' + (afOpenDeviceId || '').slice(0, 8) + ')'); } catch (e2) {}
         afMaybeAutoStart('camera adopted');
       }
     } else {
       afLog('This camera exposes no tilt — pick a PIXY in the camera list.', 'af-err');
+      try { afdiag('camera adopted, NO TILT capability (' + (afOpenDeviceId || '').slice(0, 8) + ')'); } catch (e2) {}
     }
   }
 
@@ -1964,23 +2330,63 @@
   }
 
   // ---- drive (ported from v13 maybeDrive) --------------------------------
+  // AFFIX (fixes A/B/E): rewritten around a debounced "solid lock" instead of
+  // trusting any single frame's landmarks. A detection only counts once
+  // AF_LOCK_N consecutive frames clear AF_VIS_MIN; NO drive command is
+  // computed without a solid lock (fix A). The HOME recovery timer is driven
+  // off "time since we last HAD a solid lock," not off raw per-frame
+  // presence, so phantom single-frame detections (the flicker that caused
+  // the 3-minute stuck-down incident) can no longer reset it (fix B). Going
+  // HOME is the one deliberate exception to "no drive without lock" -- it IS
+  // the lock-loss response.
   function afMaybeDrive(result) {
     const now = performance.now();
     const lms = result && result.landmarks && result.landmarks[0];
+    const afVS = lms ? afVisStats(lms) : null;
+    const goodFrame = !!(afVS && afVS.min >= AF_VIS_MIN);
 
-    if (!lms) {
-      if (afLostSince === 0) { afLostSince = now; return; }
-      if (afT.reacq > 0 && !afRecentred && now - afLostSince > afT.reacq * 1000) {
-        afRecentred = true; afM.lost++;
-        afLog('Lost for ' + afT.reacq + 's — recentring (loss #' + afM.lost + ').', 'af-warn');
-        afCenterBoth();
+    // Raw landmark-presence edge log -- the flicker signal itself, kept
+    // distinct from the debounced lock signal below. This is what let us
+    // diagnose the phantom-floor-detection incident from the log in the
+    // first place; the lock logic below acts on it, but doesn't replace it.
+    try {
+      if (lms && !afHadLms) { afHadLms = true; afdiag('landmarks acquired'); }
+      else if (!lms && afHadLms) { afHadLms = false; afdiag('landmarks LOST'); }
+    } catch (e2) {}
+
+    if (goodFrame) {
+      afSolidCount++;
+      if (!afLocked && afSolidCount >= AF_LOCK_N) {
+        afLocked = true;
+        try { afdiag('solid lock ACQUIRED (' + AF_LOCK_N + ' consecutive good frames)'); } catch (e2) {}
+      }
+    } else {
+      afSolidCount = 0;
+      if (afLocked) {
+        afLocked = false;
+        try { afdiag('solid lock LOST (' + (lms ? 'low visibility' : 'no landmarks') + ')'); } catch (e2) {}
+      }
+    }
+
+    if (afLocked) {
+      afSyncActualPosition(); // fix E: never drive from a stale cached position
+      afLastLockedAt = now;
+      afHomed = false;        // armed again for the next loss
+    } else {
+      // fix B: unconditional recovery -- no solid lock for the reacquire
+      // window sends the camera HOME, whatever the raw flicker looked like.
+      // afHomed guards against repeating the command every frame while still
+      // unlocked.
+      if (afT.reacq > 0 && !afHomed && now - afLastLockedAt > afT.reacq * 1000) {
+        afHomed = true; afM.lost++;
+        afLog('No solid lock for ' + afT.reacq + 's — going HOME (loss #' + afM.lost + ').', 'af-warn');
+        try { afdiag('HOME recovery triggered (no solid lock for ' + afT.reacq + 's, loss #' + afM.lost + ')'); } catch (e2) {}
+        afSyncActualPosition();
+        afGoHome();
       }
       return;
     }
-    afLostSince = 0; afRecentred = false;
 
-    var afVS=afVisStats(lms);
-    if(!afVS||afVS.min<AF_VIS_MIN){if(afLostSince===0){afLostSince=now;}return;}
     if (now - afLastCmd < afT.rate) return;
     const cX = afAvg(lms, AF_TORSO, 'x'), cY = afAvg(lms, AF_TORSO, 'y');
     if (cX === null || cY === null) return;
@@ -2055,8 +2461,9 @@
       : f(afM.detMean, 1) + ' ms (max ' + f(afM.detMax, 0) + ')';
     afQ('afPos').textContent = 'T ' + (afCurTilt / AF_U).toFixed(0) + '° · P ' + (afCurPan / AF_U).toFixed(0) + '°';
     afQ('afSlew').textContent = 'T ' + f(afM.peakT, 0) + ' · P ' + f(afM.peakP, 0);
-    afQ('afVis').textContent = afM.vis ? f(afM.vis.mean, 3) + ' / ' + f(afM.vis.min, 3) : '—';
+    afQ('afVis').textContent = (afLocked && afM.vis) ? f(afM.vis.mean, 3) + ' / ' + f(afM.vis.min, 3) : '—';
     afQ('afCounts').textContent = afM.lost + ' / ' + (afM.sup.tilt + afM.sup.pan) + ' / ' + (afM.clamp.tilt + afM.clamp.pan);
+    afQ('afLock').textContent = afLocked ? 'LOCKED' : ('unlocked (' + afSolidCount + '/' + AF_LOCK_N + ')');
   }
 
   // ---- main loop ---------------------------------------------------------

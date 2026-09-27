@@ -362,7 +362,7 @@
   // away on pan; auto-framing is separately HELD.
   const AF_FORCE_FALLBACK = { t: true, p: false };
   let afInvUnconfirmed = false;  // set true when an unrecognised camera is adopted
-  console.log('[build] index-affix 2026-09-24 — inv=' +
+  console.log('[build] index-rackhome 2026-09-27 — inv=' +
     (params.get('inv') || '(none)') + (AF_FORCE_MODE ? ' (order-keyed: index0=Door, index1=Rack)' : ''));
 
   // Google's public STUN servers — free, no signup, fine for most home networks.
@@ -1522,9 +1522,10 @@
   const AF_LS_HOME = 'afHome_v1';   // per-deviceId saved home, same pattern as AF_LS_INV
   const AF_HOME_TILT_DEFAULT = 30;  // ° down — DOOR-ONLY built-in default (door: positive tilt = down)
   const AF_HOME_PAN_DEFAULT = 0;    // ° — DOOR-ONLY built-in default
-  // Rack has no built-in default: until a home is explicitly saved for its
-  // deviceId, rack recovery falls back to literal 0/0 (today's behaviour),
-  // set inside afLoadHome() below.
+  const AF_HOME_TILT_RACK_DEFAULT = 32;  // ° — RACK-ONLY built-in default
+  const AF_HOME_PAN_RACK_DEFAULT = -17;  // ° — RACK-ONLY built-in default
+  // Door and rack each get a built-in default; unrecognised/unforced cameras
+  // fall back to literal 0/0, set inside afLoadHome() below.
 
   // v13 validated defaults, carried forward verbatim from the bench.
   const AF_DEFAULTS = {
@@ -1692,7 +1693,7 @@
   try { window.addEventListener('pagehide', afdiagFlush); } catch (e) {}
   try { window.addEventListener('beforeunload', afdiagFlush); } catch (e) {}
 
-  afdiag('PAGE LOAD — [build] index-affix 2026-09-24 — inv=' +
+  afdiag('PAGE LOAD — [build] index-rackhome 2026-09-27 — inv=' +
     (params.get('inv') || '(none)') +
     (AF_FORCE_MODE ? ' (order-keyed: index0=Door, index1=Rack)' : ''));
   // ===== AF DIAGNOSTIC LOGGER: JS END =======================================
@@ -2128,8 +2129,8 @@
   }
 
   // ---- AFFIX (fix C): per-camera HOME, replacing 0/0 as the recovery target
-  // Door gets a built-in default (30° down / 0° pan); RACK GETS NO DEFAULT --
-  // until a home is explicitly saved for its deviceId, rack recovery keeps
+  // Door gets a built-in default (30° down / 0° pan); rack gets a built-in
+  // default too (32° tilt / -17° pan). Unrecognised/unforced cameras keep
   // today's behaviour (literal 0/0), same as afCenterBoth() above.
   function afHomeStore() {
     try { return JSON.parse(localStorage.getItem(AF_LS_HOME) || '{}'); } catch (e) { return {}; }
@@ -2150,13 +2151,16 @@
         return;
       }
     }
-    // No saved home for this camera -- only a recognised DOOR gets the
-    // built-in non-zero default. Rack (or unrecognised/unforced) stays 0/0.
+    // No saved home for this camera -- a recognised DOOR or RACK gets its
+    // built-in non-zero default. Unrecognised/unforced stays 0/0.
     if (AF_FORCE_MODE) {
       const hit = afRoleFor(afOpenDeviceId);
       if (hit && hit.role === 'Door') {
         afHomeTilt = AF_HOME_TILT_DEFAULT;
         afHomePan = AF_HOME_PAN_DEFAULT;
+      } else if (hit && hit.role === 'Rack') {
+        afHomeTilt = AF_HOME_TILT_RACK_DEFAULT;
+        afHomePan = AF_HOME_PAN_RACK_DEFAULT;
       }
     }
     afPaintHome();
@@ -2183,7 +2187,7 @@
         localStorage.setItem(AF_LS_HOME, JSON.stringify(s));
       } catch (e) {}
     }
-    afLoadHome(); // re-derive: door default, or 0/0 for rack/unrecognised
+    afLoadHome(); // re-derive: door/rack default, or 0/0 for unrecognised
     afLog('Home reset for ' + (afOpenDeviceId || '').slice(0, 8) + ': tilt ' + afHomeTilt.toFixed(0) + '°, pan ' + afHomePan.toFixed(0) + '°.', 'af-ok');
     try { afdiag('home RESET (' + afHomeTilt.toFixed(0) + '°/' + afHomePan.toFixed(0) + '°)'); } catch (e2) {}
   }

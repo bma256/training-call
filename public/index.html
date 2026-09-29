@@ -362,7 +362,7 @@
   // away on pan; auto-framing is separately HELD.
   const AF_FORCE_FALLBACK = { t: true, p: false };
   let afInvUnconfirmed = false;  // set true when an unrecognised camera is adopted
-  console.log('[build] index-rackhome 2026-09-27 — inv=' +
+  console.log('[build] index-recover2 2026-09-29 — inv=' +
     (params.get('inv') || '(none)') + (AF_FORCE_MODE ? ' (order-keyed: index0=Door, index1=Rack)' : ''));
 
   // Google's public STUN servers — free, no signup, fine for most home networks.
@@ -404,10 +404,6 @@
   let ws = null;
   let inCall = false;
   let roomFull = false; // set on server 'full' -- gates the room-busy retry loop below
-  let roomFullRetryTimer = null; // SEAT-SWAP MODULE: retry-every-15s timer while room-busy
-  let roomFullDeadline = 0; // SEAT-SWAP MODULE: Date.now() cutoff — stop retrying after this
-  const ROOM_FULL_RETRY_MS = 15000; // SEAT-SWAP MODULE: retry cadence while room is busy
-  const ROOM_FULL_GIVE_UP_MS = 180000; // SEAT-SWAP MODULE: stop retrying after 3 minutes
   let replaced = false; // SEAT-SWAP MODULE: set on server 'replaced' -- this tab was swapped out by our own reconnect elsewhere; never auto-retry
   let pendingCandidates = [];
   let amCaller = false; // only the caller initiates ICE restarts, to avoid both sides colliding
@@ -415,6 +411,28 @@
   let disconnectTimer = null;
   let iceRestartAttempts = 0;
   const MAX_ICE_RESTARTS = 4;
+
+  // RECOVER MODULE: consolidated single-timer signaling retry (replaces the old
+  // untracked ws.onclose setTimeout + the separate roomFullRetryTimer -- both could
+  // fire independently and open a second concurrent socket sharing the same cid,
+  // which is what produced the spurious REPLACED eviction on 2026-09-27).
+  let signalRetryTimer = null;
+  let signalRetryAttempt = 0;
+  const SIGNAL_RETRY_BASE_MS = 1000;
+  const SIGNAL_RETRY_MAX_MS = 30000;
+  const SIGNAL_RETRY_MAX_EXPONENT = 6;
+  let rebuildingPc = false; // guards attemptIceRestart() vs rebuildPeerConnection() from racing each other
+  let joinOfferSent = false; // guards against a duplicate offer from a 'request-offer' arriving mid-join
+  let hiddenAt = 0; // timestamp of the last visibilitychange -> hidden, for the forced-reconnect-after-hidden check
+  const FORCE_RECONNECT_HIDDEN_MS = 10000;
+
+  // RECOVER MODULE: paced media-rebuild ladder (separate from the fast ICE-restart
+  // ladder below -- this paces REBUILDS specifically, so a sustained outage doesn't
+  // hammer rebuild attempts back-to-back).
+  let mediaRebuildAttempt = 0;
+  let mediaRebuildTimer = null;
+  const MEDIA_REBUILD_BASE_MS = 2000;
+  const MEDIA_REBUILD_MAX_MS = 30000;
 
   // Pinch-to-zoom / double-tap-to-zoom on the remote video specifically.
   // This is deliberately implemented as our own CSS transform on the video
@@ -564,33 +582,126 @@
     return `${proto}//${location.host}?room=${encodeURIComponent(room)}&cid=${encodeURIComponent(clientId)}`;
   }
 
-  function connectSignaling() {
-    ws = new WebSocket(wsUrl());
+  // RECOVER MODULE: single consolidated retry path (replaces the old untracked
+  // ws.onclose setTimeout + the separate roomFullRetryTimer). Capped exponential
+  // backoff with jitter; never gives up permanently.
+  function computeBackoff(attempt) {
+    const exp = Math.min(attempt, SIGNAL_RETRY_MAX_EXPONENT);
+    const capped = Math.min(SIGNAL_RETRY_MAX_MS, SIGNAL_RETRY_BASE_MS * Math.pow(2, exp - 1));
+    return Math.round(capped * (0.5 + Math.random() * 0.5)); // 50-100% jitter, avoids synchronized retries
+  }
 
-    ws.onopen = () => {
+  function scheduleReconnect(reason) {
+    if (!inCall || replaced) return;
+    if (signalRetryTimer) return; // ONE timer only -- a second scheduling attempt in this window is a safe no-op
+    signalRetryAttempt++;
+    const delay = computeBackoff(signalRetryAttempt);
+    afdiag('RECONNECT scheduled — reason=' + reason + ' attempt=' + signalRetryAttempt + ' delay=' + delay + 'ms');
+    setStatus('Reconnecting… (attempt ' + signalRetryAttempt + ')', 'warn');
+    signalRetryTimer = setTimeout(() => {
+      signalRetryTimer = null;
+      if (!inCall || replaced) return;
+      connectSignaling();
+    }, delay);
+  }
+
+  function cancelReconnect() {
+    if (signalRetryTimer) { clearTimeout(signalRetryTimer); signalRetryTimer = null; }
+  }
+
+  function reconnectNow(reason, force) {
+    if (!inCall || replaced) return;
+    if (!force && ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+    afdiag('RECONNECT-NOW trigger — reason=' + reason + ' force=' + !!force + ' wsState=' + (ws ? ws.readyState : 'null'));
+    cancelReconnect();
+    connectSignaling();
+  }
+
+  function connectSignaling() {
+    if (ws) { try { ws.close(4001, 'superseded'); } catch (e) {} } // close the old one FIRST, always
+    const mySocket = new WebSocket(wsUrl());
+    ws = mySocket;
+
+    mySocket.onopen = () => {
+      if (mySocket !== ws) return;
       setStatus('Waiting for the other side to join…', 'warn');
     };
 
-    ws.onmessage = async (event) => {
+    mySocket.onmessage = async (event) => {
+      if (mySocket !== ws) { afdiag('WS MESSAGE ignored (superseded socket)'); return; }
       const msg = JSON.parse(event.data);
 
       if (msg.type === 'joined') {
+        afdiag('SIGNAL joined — peers=' + msg.peers);
         // SEAT-SWAP MODULE: being admitted at all means we were not turned
         // away for a full room this time -- clear any room-busy backoff
         // state left over from earlier retries.
         roomFull = false;
-        roomFullDeadline = 0;
-        clearTimeout(roomFullRetryTimer);
-        roomFullRetryTimer = null;
-        if (msg.peers === 2) {
-          amCaller = true;
-          await createPeerConnection();
-          await makeOffer();
+        cancelReconnect();
+        if (signalRetryAttempt > 0) {
+          afdiag('RECONNECT succeeded after ' + signalRetryAttempt + ' attempt(s)');
+          setStatus('Reconnected', 'live');
+        }
+        signalRetryAttempt = 0;
+        amCaller = (msg.peers === 2); // deterministic every join -- at most one side ever sees peers===2 for a given pairing
+        joinOfferSent = false; // fresh join cycle -- reset the double-offer guard
+        if (amCaller) {
+          if (!pc) {
+            joinOfferSent = true; // set BEFORE the awaits -- a 'request-offer' can arrive mid-await
+            await createPeerConnection();
+            await makeOffer();
+          } else if (pc.connectionState !== 'connected' && pc.connectionState !== 'connecting') {
+            afdiag('SIGNAL joined (rejoin) — pc state=' + pc.connectionState + ' — renegotiating');
+            joinOfferSent = true; // set BEFORE the await, same reason
+            await attemptIceRestart();
+          }
+          // else: pc looks connected/connecting -- leave it alone for now; if the other
+          // side actually has nothing (single-sided-drop gap), its 'peer-joined' handler
+          // will send us 'request-offer' and we act on it below.
+        }
+      } else if (msg.type === 'request-offer') {
+        // Gap fix: the other side had no pc at all when it got our 'joined'/'peer-joined'
+        // (torn down by an earlier 'peer-left' on its end) and our own pc merely LOOKED
+        // connected above, so we never offered. Rebuild for real instead of waiting for
+        // organic ICE failure detection.
+        afdiag('SIGNAL request-offer received — amCaller=' + amCaller + ' pc=' + (pc ? pc.connectionState : 'null') + ' joinOfferSent=' + joinOfferSent);
+        if (!amCaller) {
+          afdiag('SIGNAL request-offer ignored — not the caller');
+        } else if (joinOfferSent) {
+          afdiag('SIGNAL request-offer ignored — an offer for this join is already in flight');
+        } else {
+          joinOfferSent = true;
+          await rebuildPeerConnection('request-offer');
         }
       } else if (msg.type === 'peer-joined') {
-        setStatus('Other side joined — connecting…', 'warn');
-        if (!pc) await createPeerConnection();
+        afdiag('SIGNAL peer-joined');
+        if (pc && pc.connectionState === 'connected') {
+          setStatus('Connected', 'live');
+        } else {
+          setStatus('Other side joined — connecting…', 'warn');
+        }
+        amCaller = false; // the side that just joined (peers===2 on ITS OWN 'joined') is the caller, never us
+        if (!pc) {
+          await createPeerConnection();
+          afdiag('SIGNAL peer-joined — no local pc, requesting fresh offer');
+          send({ type: 'request-offer' });
+        } else if (pc.connectionState !== 'connected' && pc.connectionState !== 'connecting') {
+          afdiag('SIGNAL peer-joined — pc state=' + pc.connectionState + ' (not our role to offer; waiting for their offer)');
+        }
+        // else: pc already connected/connecting -- both sides kept a live pc (e.g. a pure
+        // signaling-server restart); leave it alone.
       } else if (msg.type === 'offer') {
+        afdiag('SIGNAL offer received' + (pc ? ' — local pc state=' + pc.connectionState : ' — no local pc'));
+        if (pc && (pc.connectionState === 'failed' || pc.connectionState === 'closed')) {
+          // Callee-side offer-reset: a fresh offer arrived while our own pc is dead --
+          // this is the caller's rebuild landing here. Reset locally so we never answer
+          // into a dead pc. No new signaling message needed; inferred purely from our
+          // own pc.connectionState. Preserve amCaller (teardownPeerConnection zeroes it).
+          afdiag('SIGNAL offer — local pc state=' + pc.connectionState + ' — resetting before answering');
+          const wasCaller = amCaller;
+          teardownPeerConnection();
+          amCaller = wasCaller;
+        }
         if (!pc) await createPeerConnection();
         await pc.setRemoteDescription(new RTCSessionDescription(msg));
         await flushPendingCandidates();
@@ -598,6 +709,7 @@
         await pc.setLocalDescription(answer);
         send({ type: 'answer', sdp: answer.sdp });
       } else if (msg.type === 'answer') {
+        afdiag('SIGNAL answer received');
         await pc.setRemoteDescription(new RTCSessionDescription(msg));
         await flushPendingCandidates();
       } else if (msg.type === 'candidate') {
@@ -607,6 +719,7 @@
           pendingCandidates.push(msg.candidate);
         }
       } else if (msg.type === 'peer-left') {
+        afdiag('SIGNAL peer-left');
         setStatus('Other side disconnected', 'warn');
         setPlaceholder('Call ended', 'The other side left. Tap Start Call to begin a new session.', true);
         teardownPeerConnection();
@@ -616,7 +729,9 @@
         // another tab/window here) and evicted this socket's seat in its
         // favor. Stand DOWN, do not retry -- retrying would just evict that
         // new occupant right back, and the two could ping-pong forever.
+        afdiag('SIGNAL replaced — standing down, no retry');
         replaced = true;
+        cancelReconnect();
         inCall = false;
         callBtn.textContent = 'Start Call';
         callBtn.classList.remove('end');
@@ -644,37 +759,26 @@
         // SEAT-SWAP MODULE: a full room is often a stale seat that just
         // hasn't been cleaned up yet (heartbeat sweep, or the other side's
         // own reconnect still in flight) rather than a permanent state, so
-        // retry for a few minutes before giving up. roomFull=true blocks the
-        // generic ws.onclose retry below; this dedicated timer drives retries
-        // at a slower, deliberate cadence instead of hammering the server.
+        // keep retrying through the single consolidated retry path -- never
+        // give up permanently.
+        afdiag('SIGNAL full — room busy');
         roomFull = true;
-        if (!roomFullDeadline) roomFullDeadline = Date.now() + ROOM_FULL_GIVE_UP_MS;
-        clearTimeout(roomFullRetryTimer);
-        if (Date.now() >= roomFullDeadline) {
-          inCall = false;
-          roomFullRetryTimer = null;
-          callBtn.textContent = 'Start Call';
-          callBtn.classList.remove('end');
-          setStatus('Room already has two people', 'bad');
-          setPlaceholder('Call already in progress', 'This link is already open on two devices. Close any other Training Call tab or window, then tap Start Call.', true);
-        } else {
-          setStatus('Room busy — retrying…', 'warn');
-          setPlaceholder('Room busy', 'This link is already open on two devices. Retrying automatically…', true);
-          roomFullRetryTimer = setTimeout(() => {
-            if (inCall && roomFull) connectSignaling();
-          }, ROOM_FULL_RETRY_MS);
-        }
+        setStatus('Room busy — retrying…', 'warn');
+        setPlaceholder('Room busy', 'This link is already open on two devices. Retrying automatically…', true);
+        scheduleReconnect('room-full');
       }
     };
 
-    ws.onclose = () => {
-      if (inCall && !roomFull && !replaced) {
-        setStatus('Signaling lost — retrying…', 'bad');
-        setTimeout(() => { if (inCall && !roomFull && !replaced) connectSignaling(); }, 2000);
-      }
+    mySocket.onclose = (event) => {
+      if (mySocket !== ws) { afdiag('WS CLOSE ignored (superseded socket) — code=' + event.code); return; }
+      afdiag('WS CLOSE — code=' + event.code + ' reason=' + (event.reason || '(none)') + ' wasClean=' + event.wasClean);
+      if (inCall && !replaced) setStatus('Signaling lost — retrying…', 'bad');
+      scheduleReconnect('ws-close');
     };
 
-    ws.onerror = () => {
+    mySocket.onerror = () => {
+      if (mySocket !== ws) return;
+      afdiag('WS ERROR');
       // SEAT-SWAP MODULE: once this tab has been replaced, its status is
       // final ("Call moved") -- don't let a trailing socket-error event
       // (the server closing this socket right after 'replaced' can trigger
@@ -685,7 +789,12 @@
   }
 
   function send(msg) {
-    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
+    if (ws && ws.readyState === WebSocket.OPEN) { ws.send(JSON.stringify(msg)); return; }
+    // Narrow, zero-guesswork item-(c) fix: this is a PROVEN failure (we tried to send and
+    // the socket isn't usable), not a heuristic -- convert it into a real recovery trigger
+    // instead of silently dropping the message as before.
+    afdiag('SEND dropped — ws not open (state=' + (ws ? ws.readyState : 'null') + ') for type=' + (msg && msg.type));
+    reconnectNow('send-while-not-open');
   }
 
   async function flushPendingCandidates() {
@@ -727,11 +836,15 @@
 
     pc.onconnectionstatechange = () => {
       if (!pc) return;
+      afdiag('PC connectionState=' + pc.connectionState);
       if (pc.connectionState === 'connected') {
         setStatus('Connected', 'live');
         setPlaceholder(null, null, false);
         clearTimeout(disconnectTimer);
         iceRestartAttempts = 0; // reset once the connection is stably back
+        mediaRebuildAttempt = 0;
+        clearTimeout(mediaRebuildTimer);
+        mediaRebuildTimer = null;
         localStorage.setItem(LS_HAS_CONNECTED, 'true');
       } else if (pc.connectionState === 'disconnected') {
         // 'disconnected' often self-heals within a few seconds (a brief
@@ -748,24 +861,73 @@
         setStatus('Connecting…', 'warn');
       }
     };
+
+    // RECOVER MODULE: log-only -- deliberately does not drive any recovery decision of
+    // its own, so there is only ever one state machine (onconnectionstatechange above)
+    // deciding when to act.
+    pc.oniceconnectionstatechange = () => {
+      if (!pc) return;
+      afdiag('PC iceConnectionState=' + pc.iceConnectionState);
+    };
   }
 
-  async function attemptIceRestart() {
+  async function attemptIceRestart(force) {
     if (!pc || !amCaller) return; // only the caller renegotiates, to avoid both sides colliding
-    if (pc.connectionState === 'connected') return; // already recovered on its own
+    if (!force && pc.connectionState === 'connected') return; // already recovered on its own
+    if (rebuildingPc) return; // a rebuild is already in flight -- don't collide with it
     if (iceRestartAttempts >= MAX_ICE_RESTARTS) {
-      setStatus('Connection lost', 'bad');
-      setPlaceholder('Connection lost', 'Tap End Call, then Start Call again to reconnect.', true);
+      afdiag('ICE RESTART exhausted (' + iceRestartAttempts + ' attempts) — falling back to paced rebuild');
+      scheduleMediaRebuild('ice-restart-exhausted');
       return;
     }
     iceRestartAttempts++;
+    afdiag('ICE RESTART attempt ' + iceRestartAttempts + '/' + MAX_ICE_RESTARTS);
     try {
       const offer = await pc.createOffer({ iceRestart: true });
       await pc.setLocalDescription(offer);
       send({ type: 'offer', sdp: offer.sdp });
     } catch (e) {
+      afdiag('ICE RESTART error — ' + (e && e.message));
       // If this attempt fails to even start, the next state-change event
       // (or the timer above) will trigger another try, up to the cap.
+    }
+  }
+
+  // RECOVER MODULE: paced media-rebuild ladder. Rebuilds (not individual ICE-restart
+  // attempts) are spaced by a capped, jittered backoff so a sustained outage doesn't
+  // hammer rebuild attempts back-to-back. Reset to 0 on a stable 'connected' above.
+  function computeMediaBackoff(attempt) {
+    const exp = Math.min(attempt, 6);
+    const capped = Math.min(MEDIA_REBUILD_MAX_MS, MEDIA_REBUILD_BASE_MS * Math.pow(2, exp - 1));
+    return Math.round(capped * (0.5 + Math.random() * 0.5));
+  }
+
+  function scheduleMediaRebuild(trigger) {
+    if (!amCaller || mediaRebuildTimer) return;
+    mediaRebuildAttempt++;
+    const delay = computeMediaBackoff(mediaRebuildAttempt);
+    afdiag('MEDIA REBUILD scheduled — trigger=' + trigger + ' attempt=' + mediaRebuildAttempt + ' delay=' + delay + 'ms');
+    mediaRebuildTimer = setTimeout(() => { mediaRebuildTimer = null; rebuildPeerConnection(trigger); }, delay);
+  }
+
+  async function rebuildPeerConnection(trigger) {
+    if (!amCaller || rebuildingPc) return; // same one-side-only discipline as attemptIceRestart
+    rebuildingPc = true;
+    afdiag('MEDIA REBUILD start — trigger=' + trigger + ' iceRestartAttempts=' + iceRestartAttempts);
+    setStatus('Rebuilding connection…', 'warn');
+    try {
+      const wasCaller = amCaller; // teardownPeerConnection() unconditionally resets amCaller=false -- capture first
+      teardownPeerConnection();
+      amCaller = wasCaller; // restore role so makeOffer() below still runs on the right side
+      iceRestartAttempts = 0; // fresh ICE-restart budget for the new pc's own lifecycle
+      if (!localStream) { afdiag('MEDIA REBUILD aborted — no local stream'); return; }
+      await createPeerConnection();
+      await makeOffer();
+      afdiag('MEDIA REBUILD offer sent');
+    } catch (e) {
+      afdiag('MEDIA REBUILD error — ' + (e && e.message));
+    } finally {
+      rebuildingPc = false;
     }
   }
 
@@ -793,9 +955,8 @@
   async function startCallFlow() {
     if (inCall) return;
     roomFull = false; // a deliberate Start Call clears any prior room-full stand-down
-    roomFullDeadline = 0; // SEAT-SWAP MODULE: fresh 3-minute room-busy budget on each deliberate Start Call
-    clearTimeout(roomFullRetryTimer);
-    roomFullRetryTimer = null;
+    cancelReconnect();
+    signalRetryAttempt = 0;
     replaced = false; // SEAT-SWAP MODULE: a deliberate Start Call clears any prior seat-swap stand-down
     inCall = true;
     callBtn.textContent = 'End Call';
@@ -814,8 +975,9 @@
 
   function endCallFlow() {
     inCall = false;
-    clearTimeout(roomFullRetryTimer); // SEAT-SWAP MODULE: a manual End Call also cancels any pending room-busy retry
-    roomFullRetryTimer = null;
+    cancelReconnect(); // a manual End Call also cancels any pending reconnect
+    clearTimeout(mediaRebuildTimer);
+    mediaRebuildTimer = null;
     callBtn.textContent = 'Start Call';
     callBtn.classList.remove('end');
     teardownPeerConnection();
@@ -827,6 +989,39 @@
   callBtn.addEventListener('click', () => {
     if (!inCall) startCallFlow(); else endCallFlow();
   });
+
+  // RECOVER MODULE: reconnect triggers beyond the passive retry timer -- if the tab
+  // comes back into view/focus, or the network comes back, check right now instead of
+  // waiting for the backoff timer.
+  document.addEventListener('visibilitychange', () => {
+    afdiag('PAGE visibilitychange — state=' + document.visibilityState);
+    if (document.visibilityState === 'hidden') {
+      hiddenAt = Date.now();
+    } else if (document.visibilityState === 'visible') {
+      const hiddenFor = hiddenAt ? (Date.now() - hiddenAt) : 0;
+      if (hiddenFor > FORCE_RECONNECT_HIDDEN_MS) {
+        afdiag('RECONNECT-NOW forced — hidden for ' + hiddenFor + 'ms (possible suspended/zombie socket)');
+        reconnectNow('visibilitychange-forced', true);
+      } else {
+        reconnectNow('visibilitychange');
+      }
+    }
+  });
+  window.addEventListener('pageshow', (e) => {
+    afdiag('PAGE pageshow — persisted=' + e.persisted);
+    const hiddenFor = hiddenAt ? (Date.now() - hiddenAt) : 0;
+    if (e.persisted || hiddenFor > FORCE_RECONNECT_HIDDEN_MS) {
+      reconnectNow('pageshow-forced', true);
+    } else {
+      reconnectNow('pageshow');
+    }
+  });
+  window.addEventListener('online', () => { afdiag('NETWORK online'); reconnectNow('online'); });
+  window.addEventListener('offline', () => { afdiag('NETWORK offline'); });
+  window.addEventListener('focus', () => { afdiag('PAGE focus'); reconnectNow('focus'); });
+  document.addEventListener('freeze', () => { afdiag('PAGE freeze'); }); // Page Lifecycle API, Chromium-only, log-only
+  document.addEventListener('resume', () => { afdiag('PAGE resume'); reconnectNow('resume'); });
+  window.addEventListener('pagehide', (e) => { afdiag('PAGE pagehide — persisted=' + e.persisted); });
 
   // --- Fullscreen + auto-hiding controls -----------------------------------
   // Goal: while in fullscreen, the header and footer fade away after a few
@@ -1693,7 +1888,7 @@
   try { window.addEventListener('pagehide', afdiagFlush); } catch (e) {}
   try { window.addEventListener('beforeunload', afdiagFlush); } catch (e) {}
 
-  afdiag('PAGE LOAD — [build] index-rackhome 2026-09-27 — inv=' +
+  afdiag('PAGE LOAD — [build] index-recover2 2026-09-29 — inv=' +
     (params.get('inv') || '(none)') +
     (AF_FORCE_MODE ? ' (order-keyed: index0=Door, index1=Rack)' : ''));
   // ===== AF DIAGNOSTIC LOGGER: JS END =======================================
@@ -1845,6 +2040,34 @@
         afdiagBox.value = '';
         afdiag('log CLEARED by user');
       } catch (e) {}
+    });
+  }
+
+  // RECOVER MODULE: bench-test buttons -- exercise the real recovery paths, not a fake
+  // parallel one, so what you see here is exactly what production does.
+  const recoverySection = document.createElement('div');
+  recoverySection.innerHTML = `
+    <hr>
+    <h4>Recovery Test</h4>
+    <button id="simSignalDropBtn">Simulate signaling drop</button>
+    <button id="simMediaDropBtn">Simulate media drop</button>
+  `;
+  afPanel.appendChild(recoverySection);
+
+  const simSignalDropBtn = document.getElementById('simSignalDropBtn');
+  const simMediaDropBtn = document.getElementById('simMediaDropBtn');
+
+  if (simSignalDropBtn) {
+    simSignalDropBtn.addEventListener('click', () => {
+      afdiag('TEST simulate signaling drop — force-closing ws');
+      if (ws) ws.close(4000, 'simulated-drop'); // real close -> onclose -> scheduleReconnect, same as a genuine drop
+    });
+  }
+  if (simMediaDropBtn) {
+    simMediaDropBtn.addEventListener('click', () => {
+      afdiag('TEST simulate media drop — forcing ICE restart path');
+      if (pc && amCaller) attemptIceRestart(true); // force bypasses the "already connected" early-return
+      else afdiag('TEST simulate media drop — skipped (no pc, or this side is not the caller)');
     });
   }
 

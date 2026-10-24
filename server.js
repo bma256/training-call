@@ -135,6 +135,12 @@ wss.on('connection', (ws, req) => {
     } catch (e) {
       return; // ignore anything that isn't valid JSON
     }
+    // PINGPONG MODULE: app-level liveness probe. Answer the sender only and
+    // never relay it -- the other peer has no business seeing our pings.
+    if (msg && msg.type === 'ping') {
+      send(ws, { type: 'pong', seq: msg.seq, t: msg.t });
+      return;
+    }
     // Relay signaling messages (offer/answer/candidate) to the other peer only.
     peers.forEach((peer) => {
       if (peer !== ws) send(peer, msg);

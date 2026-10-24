@@ -340,6 +340,30 @@
   // within-session handle for getUserMedia + the camera-switch messages, where it is
   // perfectly stable. Param absent -> the page behaves exactly as the base build.
   const AF_FORCE_MODE = (params.get('inv') === 'door');
+  // ===== TELEMETRY MODULE: gym/trainer role latch ===========================
+  // Declared immediately after AF_FORCE_MODE, before any afdiag() call exists,
+  // so telemIsTrainer() is safe to call from the very first afdiag() line.
+  // Starts from AF_FORCE_MODE (set only by the gym launcher's ?inv=door) and
+  // latches true the first time a PTZ (tilt-capable) camera is adopted -- see
+  // the 1s telemetry tick below. Never reverts once true.
+  let telemIsGym = AF_FORCE_MODE;
+  const telemIsTrainer = () => !telemIsGym;
+  // State for the log-stream/heartbeat/sigprobe module below -- declared here,
+  // alongside the role latch, so every value exists before any afdiag() call
+  // (afdiag()'s enqueue hook reads telemIsTrainer() from its very first
+  // invocation in the page's startup sequence).
+  const TELEM_LS_QUEUE = 'telemLogQueue_v1';
+  const TELEM_QUEUE_MAX = 2000;       // in-memory queue cap -- oldest lines drop first
+  const TELEM_STALE_MS = 6 * 60 * 60 * 1000; // discard queued lines older than 6h on load
+  const TELEM_CHUNK_MAX_LINES = 50;   // at most this many lines per control-channel message
+  const TELEM_CHUNK_MAX_BYTES = 8192; // ...and stop adding lines past ~8KB of JSON
+  const TELEM_BUFFERED_AMOUNT_MAX = 65536; // skip sending this tick if channel backlog >= 64KB
+  let telemQueue = [];                // lines not yet sent (or not yet confirmed sent)
+  let telemQueueDirty = false;        // set on any mutation; cleared once mirrored
+  let telemHbSeq = 0;
+  let telemHbLastAt = 0;
+  let telemSigprobeSeq = 0;
+  // ===== TELEMETRY MODULE END (role latch) ===================================
   //  index : { t: invertTilt, p: invertPan, role: display name }
   const AF_ROLE_BY_INDEX = AF_FORCE_MODE ? [
     { t: true, p: true,  role: 'Door' },   // index 0 — launcher pins the door here (pan ON)
@@ -362,7 +386,7 @@
   // away on pan; auto-framing is separately HELD.
   const AF_FORCE_FALLBACK = { t: true, p: false };
   let afInvUnconfirmed = false;  // set true when an unrecognised camera is adopted
-  console.log('[build] index-recover2 2026-09-29 — inv=' +
+  console.log('[build] index-pingpong 2026-10-24 — inv=' +
     (params.get('inv') || '(none)') + (AF_FORCE_MODE ? ' (order-keyed: index0=Door, index1=Rack)' : ''));
 
   // Google's public STUN servers — free, no signup, fine for most home networks.
@@ -408,6 +432,14 @@
   let pendingCandidates = [];
   let amCaller = false; // only the caller initiates ICE restarts, to avoid both sides colliding
   let controlChannel = null; // CAMERA REMOTE SWITCH MODULE: data channel for cross-side camera control
+  let wsOpenedAt = 0; // TELEMETRY MODULE: wall-clock ms when the current ws opened, for TELEM-HB wsAge
+  // PINGPONG MODULE: app-level signaling liveness (see the PINGPONG block below
+  // the TELEMETRY module). Declared here so onopen/onmessage can touch them.
+  let pingSeq = 0;
+  let lastPongAt = 0;    // pong baseline -- reset on ws open and on tab-visible
+  let lastRtt = null;    // ms, from the most recent pong
+  let pongSeen = false;  // latches true on the first pong ever: proves the server speaks ping/pong
+  let probe = null;      // in-flight check ping after a long hide: { seq, socket, hiddenFor, timer }
   let disconnectTimer = null;
   let iceRestartAttempts = 0;
   const MAX_ICE_RESTARTS = 4;
@@ -624,6 +656,8 @@
 
     mySocket.onopen = () => {
       if (mySocket !== ws) return;
+      wsOpenedAt = Date.now(); // TELEMETRY MODULE: feeds TELEM-HB's wsAge field
+      lastPongAt = Date.now(); // PINGPONG MODULE: fresh socket gets a full 40s before the watchdog can fire
       setStatus('Waiting for the other side to join…', 'warn');
     };
 
@@ -766,6 +800,18 @@
         setStatus('Room busy — retrying…', 'warn');
         setPlaceholder('Room busy', 'This link is already open on two devices. Retrying automatically…', true);
         scheduleReconnect('room-full');
+      } else if (msg.type === 'sigprobe') {
+        // TELEMETRY MODULE: gym-side arrival of the trainer's signaling-path
+        // probe. Purely additive leaf -- no existing branch above is touched.
+        afdiagIngestRemote('SIGPROBE seq=' + msg.seq);
+      } else if (msg.type === 'pong') {
+        // PINGPONG MODULE: server's reply to our own ping (never relayed from the peer).
+        const now = Date.now();
+        lastPongAt = now;
+        pongSeen = true;
+        if (typeof msg.t === 'number') lastRtt = now - msg.t;
+        if (lastRtt !== null && lastRtt > 2000) afdiag('PONG seq=' + msg.seq + ' rtt=' + lastRtt + 'ms (slow)');
+        pongProbeAnswered(msg.seq, lastRtt);
       }
     };
 
@@ -1000,8 +1046,9 @@
     } else if (document.visibilityState === 'visible') {
       const hiddenFor = hiddenAt ? (Date.now() - hiddenAt) : 0;
       if (hiddenFor > FORCE_RECONNECT_HIDDEN_MS) {
-        afdiag('RECONNECT-NOW forced — hidden for ' + hiddenFor + 'ms (possible suspended/zombie socket)');
-        reconnectNow('visibilitychange-forced', true);
+        // PINGPONG BUILD: check the socket with a ping before forcing a reconnect --
+        // a forced reconnect closes the seat and the other side tears its call down.
+        verifyOrReconnect(hiddenFor);
       } else {
         reconnectNow('visibilitychange');
       }
@@ -1309,6 +1356,10 @@
         cameraSelect.value = msg.deviceId;
         localStorage.setItem(LS_CAMERA, msg.deviceId);
         if (localStream) startLocalStream().then(sendCameraList);
+      } else if (msg.type === 'trainer-log-batch') {
+        // TELEMETRY MODULE: gym-side arrival of a batch of trainer log lines.
+        // Purely additive leaf -- camera-list/switch-camera above untouched.
+        (msg.lines || []).forEach((line) => afdiagIngestRemote(line));
       }
     };
   }
@@ -1807,8 +1858,252 @@
       if (afdiagPending.length > AFDIAG_MAX_LINES) {
         afdiagPending = afdiagPending.slice(afdiagPending.length - AFDIAG_MAX_LINES);
       }
+      // ===== TELEMETRY MODULE: queue this line for the trainer -> gym log
+      // stream. Nested try/catch so a telemetry failure can never take down
+      // normal logging above -- this is the ONLY place telemetry code touches
+      // afdiag() itself. Trainer-only (telemIsTrainer()); the gym side never
+      // enqueues its own lines for sending.
+      try { if (telemIsTrainer()) telemEnqueue(line); } catch (e2) { /* telemetry must never affect logging */ }
     } catch (e) { /* never let a logging failure affect the call */ }
   }
+
+  // ===== TELEMETRY MODULE: trainer->gym log stream, heartbeat, sigprobe =====
+  // Client-only, additive. Never calls afdiag() from anywhere in this module
+  // except the one hook inside afdiag() itself above -- all of this module's
+  // own failures go to console only, so telemetry can never affect the call
+  // or the normal diagnostic log. To remove: delete this whole block, the one
+  // afdiag() hook above, the wsOpenedAt assignment in connectSignaling()'s
+  // onopen, the 'sigprobe' arm in mySocket.onmessage, and the
+  // 'trainer-log-batch' arm in setupControlChannel()'s onmessage.
+  // (TELEM_* state constants/lets now declared near telemIsTrainer, above.)
+
+  function telemLineTimestampMs(line) {
+    try {
+      const tok = String(line).split(' ', 1)[0];
+      const ms = Date.parse(tok);
+      return isNaN(ms) ? null : ms;
+    } catch (e) { return null; }
+  }
+
+  function telemLoadQueue() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(TELEM_LS_QUEUE) || '[]');
+      const arr = Array.isArray(raw) ? raw : [];
+      const cutoff = Date.now() - TELEM_STALE_MS;
+      telemQueue = arr.filter((line) => {
+        const ms = telemLineTimestampMs(line);
+        return ms === null || ms >= cutoff; // keep anything we can't parse, rather than guess
+      }).concat(telemQueue); // persisted lines first, then anything afdiag() already enqueued before this ran
+      if (telemQueue.length > TELEM_QUEUE_MAX) {
+        telemQueue = telemQueue.slice(telemQueue.length - TELEM_QUEUE_MAX); // keep the newest
+      }
+      telemQueueDirty = true;
+    } catch (e) { telemQueue = []; console.error('[telem] loadQueue failed', e); }
+  }
+
+  function telemEnqueue(line) {
+    telemQueue.push(line);
+    if (telemQueue.length > TELEM_QUEUE_MAX) {
+      telemQueue = telemQueue.slice(telemQueue.length - TELEM_QUEUE_MAX);
+    }
+    telemQueueDirty = true;
+  }
+
+  function telemMirrorQueue() {
+    try {
+      localStorage.setItem(TELEM_LS_QUEUE, JSON.stringify(telemQueue));
+    } catch (e) { console.error('[telem] mirrorQueue failed', e); }
+  }
+
+  // Gym-side ingest: writes straight into afdiagPending, bypassing afdiag()
+  // entirely (never re-enqueued for sending -- this is the only path that
+  // appends received lines to the local log).
+  function afdiagIngestRemote(text) {
+    try {
+      const gymLine = new Date().toISOString() + ' [trainer] ' + text;
+      afdiagPending.push(gymLine);
+      if (afdiagPending.length > AFDIAG_MAX_LINES) {
+        afdiagPending = afdiagPending.slice(afdiagPending.length - AFDIAG_MAX_LINES);
+      }
+    } catch (e) { console.error('[telem] ingest failed', e); }
+  }
+
+  function telemSendSigprobe() {
+    try {
+      if (!telemIsTrainer()) return;
+      if (ws && ws.readyState === 1) { // 1 = WebSocket.OPEN -- checked directly, never via send()
+        telemSigprobeSeq++;
+        ws.send(JSON.stringify({ type: 'sigprobe', seq: telemSigprobeSeq }));
+      }
+      // else: ws closed/absent -- do nothing. No afdiag(), no reconnect trigger.
+    } catch (e) { console.error('[telem] sigprobe tick failed', e); }
+  }
+
+  function telemHeartbeatTick() {
+    try {
+      if (!telemIsTrainer()) return;
+      const now = Date.now();
+      const dt = telemHbLastAt ? (now - telemHbLastAt) : 0;
+      telemHbLastAt = now;
+      telemHbSeq++;
+      const wsAge = wsOpenedAt ? (now - wsOpenedAt) : 0;
+      afdiag('TELEM-HB seq=' + telemHbSeq + ' dt=' + dt + 'ms' +
+        ' vis=' + document.visibilityState +
+        ' online=' + navigator.onLine +
+        ' ws=' + (ws ? ws.readyState : 'null') +
+        ' wsAge=' + wsAge + 'ms' +
+        ' retry=' + signalRetryAttempt +
+        ' pc=' + (pc ? pc.connectionState : 'null') +
+        ' ice=' + (pc ? pc.iceConnectionState : 'null') +
+        ' rtt=' + (lastRtt === null ? 'na' : lastRtt + 'ms') +
+        ' pongAge=' + (lastPongAt ? (now - lastPongAt) + 'ms' : 'na'));
+    } catch (e) { console.error('[telem] heartbeat tick failed', e); }
+  }
+
+  function telemDrainTick() {
+    try {
+      // Role latch: once true, never reverts (see the declaration near AF_FORCE_MODE).
+      if (!telemIsGym && afCaps && afCaps.tilt) telemIsGym = true;
+
+      if (telemIsTrainer() && controlChannel && controlChannel.readyState === 'open' &&
+          controlChannel.bufferedAmount < TELEM_BUFFERED_AMOUNT_MAX && telemQueue.length) {
+        const chunk = [];
+        let bytes = 2; // '[]'
+        for (let i = 0; i < telemQueue.length && chunk.length < TELEM_CHUNK_MAX_LINES; i++) {
+          const line = telemQueue[i];
+          const lineBytes = JSON.stringify(line).length + 1;
+          if (chunk.length && bytes + lineBytes > TELEM_CHUNK_MAX_BYTES) break;
+          chunk.push(line);
+          bytes += lineBytes;
+        }
+        if (chunk.length) {
+          try {
+            controlChannel.send(JSON.stringify({ type: 'trainer-log-batch', lines: chunk }));
+            telemQueue = telemQueue.slice(chunk.length);
+            telemQueueDirty = true;
+          } catch (e) {
+            // Channel reported open but send() threw -- discard this chunk so one
+            // bad batch can never wedge the queue; do not retry it.
+            telemQueue = telemQueue.slice(chunk.length);
+            telemQueueDirty = true;
+            console.error('[telem] send failed, chunk discarded', e);
+          }
+        }
+      }
+
+      if (telemQueueDirty) {
+        telemMirrorQueue();
+        telemQueueDirty = false;
+      }
+    } catch (e) { console.error('[telem] drain tick failed', e); }
+  }
+
+  telemLoadQueue();
+  setInterval(telemDrainTick, 1000);
+  setInterval(telemHeartbeatTick, 30000);
+  setInterval(telemSendSigprobe, 30000);
+  try {
+    window.addEventListener('pagehide', () => {
+      try { if (telemQueueDirty) { telemMirrorQueue(); telemQueueDirty = false; } } catch (e) { console.error('[telem] pagehide mirror failed', e); }
+    });
+  } catch (e) {}
+  // ===== TELEMETRY MODULE END =================================================
+
+  // ===== PINGPONG MODULE: app-level signaling liveness =========================
+  // The server's protocol-level ws pings prove the socket to the SERVER, not to
+  // us -- a half-open socket can look OPEN here indefinitely. Every 20s send
+  // {type:'ping'}; the server answers {type:'pong'} to us only. If no pong for
+  // 40s, force a reconnect through scheduleReconnect() -- the same path
+  // mySocket.onclose uses. Both timers stand down while the tab is hidden
+  // (timers are throttled there and a stale gap would false-trigger); the
+  // baseline is reset when it comes back. The watchdog stays inert until the
+  // first pong ever arrives, so this page against a server WITHOUT ping/pong
+  // support behaves exactly like index-telemetry (no reconnect loop).
+  // To remove: delete this block, the PINGPONG lets near wsOpenedAt, the
+  // lastPongAt line in onopen, the 'pong' arm in onmessage, and the rtt/pongAge
+  // fields in TELEM-HB.
+  const PING_INTERVAL_MS = 20000;
+  const PONG_WATCHDOG_MS = 5000;
+  const PONG_TIMEOUT_MS = 40000;
+
+  function pingTick() {
+    try {
+      if (document.hidden) return;
+      if (ws && ws.readyState === 1) { // 1 = WebSocket.OPEN -- checked directly, never via send()
+        pingSeq++;
+        ws.send(JSON.stringify({ type: 'ping', seq: pingSeq, t: Date.now() }));
+      }
+    } catch (e) { console.error('[pingpong] ping tick failed', e); }
+  }
+
+  function pongWatchdogTick() {
+    try {
+      if (document.hidden) return;
+      if (!pongSeen || !inCall || replaced) return;
+      if (!ws || ws.readyState !== 1) return; // closed/connecting: the existing onclose/retry path owns it
+      const age = Date.now() - lastPongAt;
+      if (lastPongAt && age > PONG_TIMEOUT_MS) {
+        afdiag('PONG timeout — no pong for ' + age + 'ms (lastRtt=' + (lastRtt === null ? 'na' : lastRtt + 'ms') + ') — forcing reconnect');
+        lastPongAt = Date.now(); // one trigger per stall; onopen resets it again for the new socket
+        if (inCall && !replaced) setStatus('Signaling lost — retrying…', 'bad');
+        scheduleReconnect('pong-timeout');
+      }
+    } catch (e) { console.error('[pingpong] watchdog tick failed', e); }
+  }
+
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) lastPongAt = Date.now(); // reset the baseline -- hidden time is not a stall
+  });
+
+  // Check-with-a-ping-first, used when the tab comes back after > FORCE_RECONNECT_HIDDEN_MS.
+  // Pong within PONG_PROBE_MS: keep the socket, touch nothing. No pong, socket not
+  // open, or a server that has never ponged: the same forced reconnect as before.
+  // Exactly one PROBE line per decision, naming the path taken.
+  const PONG_PROBE_MS = 5000;
+
+  function verifyOrReconnect(hiddenFor) {
+    if (!inCall || replaced) return; // reconnectNow() would no-op here anyway
+    if (probe) return;               // a check is already in flight
+    if (!pongSeen || !ws || ws.readyState !== 1) {
+      afdiag('PROBE after hidden ' + hiddenFor + 'ms — path=reconnect (' +
+        (!pongSeen ? 'server has never ponged' : 'ws not open, state=' + (ws ? ws.readyState : 'null')) + ')');
+      reconnectNow('visibilitychange-forced', true);
+      return;
+    }
+    const seq = ++pingSeq;
+    probe = { seq: seq, socket: ws, hiddenFor: hiddenFor, timer: null };
+    try {
+      ws.send(JSON.stringify({ type: 'ping', seq: seq, t: Date.now() }));
+    } catch (e) {
+      probe = null;
+      afdiag('PROBE after hidden ' + hiddenFor + 'ms — path=reconnect (ping send failed)');
+      reconnectNow('visibilitychange-forced', true);
+      return;
+    }
+    probe.timer = setTimeout(() => {
+      const p = probe;
+      probe = null;
+      if (!p) return;
+      if (ws !== p.socket) {
+        afdiag('PROBE seq=' + p.seq + ' after hidden ' + p.hiddenFor + 'ms — path=none (socket already replaced)');
+        return;
+      }
+      afdiag('PROBE seq=' + p.seq + ' after hidden ' + p.hiddenFor + 'ms — path=reconnect (no pong in ' + PONG_PROBE_MS + 'ms)');
+      reconnectNow('visibilitychange-forced', true);
+    }, PONG_PROBE_MS);
+  }
+
+  // Called from the 'pong' arm, which only runs for the current socket.
+  function pongProbeAnswered(seq, rtt) {
+    if (!probe || seq !== probe.seq) return;
+    clearTimeout(probe.timer);
+    afdiag('PROBE seq=' + seq + ' after hidden ' + probe.hiddenFor + 'ms — path=kept (pong rtt=' +
+      (rtt === null ? 'na' : rtt + 'ms') + ', no reconnect)');
+    probe = null;
+  }
+  setInterval(pingTick, PING_INTERVAL_MS);
+  setInterval(pongWatchdogTick, PONG_WATCHDOG_MS);
+  // ===== PINGPONG MODULE END ==================================================
 
   function afdiagTrackLabel(t) {
     try {
@@ -1888,7 +2183,7 @@
   try { window.addEventListener('pagehide', afdiagFlush); } catch (e) {}
   try { window.addEventListener('beforeunload', afdiagFlush); } catch (e) {}
 
-  afdiag('PAGE LOAD — [build] index-recover2 2026-09-29 — inv=' +
+  afdiag('PAGE LOAD — [build] index-pingpong 2026-10-24 — inv=' +
     (params.get('inv') || '(none)') +
     (AF_FORCE_MODE ? ' (order-keyed: index0=Door, index1=Rack)' : ''));
   // ===== AF DIAGNOSTIC LOGGER: JS END =======================================
@@ -2274,13 +2569,35 @@
     }
     return out;
   }
+  // PINGPONG BUILD (B): no PTZ while the page is hidden. Every pan/tilt command
+  // funnels through afQueue/afPump and the open-time zoom checks this too, so
+  // one gate covers drive, centre, HOME and zoom. One "paused" line when the
+  // first command is skipped, one "resumed" line on return -- no per-command log.
+  let afPtzPaused = false;
+  function afPtzHiddenSkip() {
+    if (!document.hidden) return false;
+    if (!afPtzPaused) {
+      afPtzPaused = true;
+      try { afdiag('PTZ paused (page hidden)'); } catch (e2) {}
+    }
+    return true;
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && afPtzPaused) {
+      afPtzPaused = false;
+      try { afdiag('PTZ resumed'); } catch (e2) {}
+      afPump(); // nothing queued while hidden, so this is a no-op unless a command raced in
+    }
+  });
   function afQueue(axis, val) {
+    if (afPtzHiddenSkip()) { afWant[axis] = null; return; } // drop, don't buffer: a stale target on resume is worse than none
     if (afWant[axis] !== null) afM.sup[axis]++;
     afWant[axis] = val;
     afPump();
   }
   async function afPump() {
     if (afCmdInFlight || !afTrack) return;
+    if (afPtzHiddenSkip()) { afWant = { tilt: null, pan: null }; return; } // (B) a command queued just before hide
     const order = afPumpAlt ? ['pan', 'tilt'] : ['tilt', 'pan'];
     let axis = null;
     for (const a of order) { if (afWant[a] !== null) { axis = a; break; } }
@@ -2500,12 +2817,26 @@
     const hasP = afCaps && afCaps.pan && typeof afCaps.pan.max === 'number';
     afQ('afPtz').textContent = (hasT ? 'tilt ' : '') + (hasP ? 'pan ' : '') + (afCaps.zoom ? 'zoom' : '') || 'none';
 
+    // PINGPONG BUILD (C): log the hardware PTZ ranges for this camera + its role.
+    // Rack is the gym camera; non-forced or out-of-range -> unrecognised.
+    try {
+      const hit = afRoleFor(afOpenDeviceId);
+      const role = hit ? (hit.role === 'Door' ? 'door' : 'gym') : 'unrecognised';
+      const rng = (a) => (afCaps && afCaps[a] && typeof afCaps[a].max === 'number')
+        ? afCaps[a].min + '..' + afCaps[a].max + (afCaps[a].step ? ' step ' + afCaps[a].step : '')
+        : 'none';
+      afdiag('CAPS role=' + role + ' (' + (afOpenDeviceId || '').slice(0, 8) + ')' +
+        ' pan=' + rng('pan') + ' tilt=' + rng('tilt') + ' zoom=' + rng('zoom'));
+    } catch (e2) {}
+
     // Restore BEFORE the controls become usable — see afRestoreInv().
     afRestoreInv();
     afLoadHome(); // AFFIX (fix C): per-camera home -- door default, rack stays 0/0 until set
 
     // Widest zoom on open: a wider frame is fewer losses (v14 item 3).
-    if (afCaps.zoom && typeof afCaps.zoom.min === 'number') {
+    if (afPtzHiddenSkip()) {
+      // (B) adopted while hidden: skip the widest-zoom command for this adoption
+    } else if (afCaps.zoom && typeof afCaps.zoom.min === 'number') {
       try {
         await t.applyConstraints({ advanced: [{ zoom: afCaps.zoom.min }] });
         afLog('Zoom set to widest (' + afCaps.zoom.min + ').');
@@ -2604,7 +2935,9 @@
       // window sends the camera HOME, whatever the raw flicker looked like.
       // afHomed guards against repeating the command every frame while still
       // unlocked.
-      if (afT.reacq > 0 && !afHomed && now - afLastLockedAt > afT.reacq * 1000) {
+      // PINGPONG BUILD (B): checked here, not only in afQueue, so a hidden page
+      // does not consume afHomed -- HOME stays armed and fires once visible.
+      if (afT.reacq > 0 && !afHomed && now - afLastLockedAt > afT.reacq * 1000 && !afPtzHiddenSkip()) {
         afHomed = true; afM.lost++;
         afLog('No solid lock for ' + afT.reacq + 's — going HOME (loss #' + afM.lost + ').', 'af-warn');
         try { afdiag('HOME recovery triggered (no solid lock for ' + afT.reacq + 's, loss #' + afM.lost + ')'); } catch (e2) {}

@@ -1,0 +1,3476 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<title>Training Call — Auto-Frame</title>
+<style>
+  :root {
+    --bg: #0b0d10;
+    --panel: #14171c;
+    --line: #232830;
+    --text: #e8eaed;
+    --muted: #8b93a1;
+    --accent: #4fd1c5;
+    --danger: #e0556f;
+    --warn: #e3b341;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    overscroll-behavior: none;
+  }
+  body { display: flex; flex-direction: column; height: 100vh; }
+
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 18px;
+    padding-top: calc(14px + env(safe-area-inset-top));
+    padding-left: calc(18px + env(safe-area-inset-left));
+    padding-right: calc(18px + env(safe-area-inset-right));
+    border-bottom: 1px solid var(--line);
+    flex-shrink: 0;
+    transition: max-height 0.35s ease, opacity 0.25s ease, padding 0.35s ease;
+    max-height: 200px;
+    overflow: hidden;
+  }
+  .title { font-size: 15px; font-weight: 600; letter-spacing: 0.2px; }
+  .status {
+    font-size: 13px; color: var(--muted);
+    display: flex; align-items: center; gap: 6px;
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex-shrink: 0; }
+  .dot.live { background: var(--accent); animation: pulse 2s infinite; }
+  .dot.warn { background: var(--warn); }
+  .dot.bad { background: var(--danger); }
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(79,209,197,0.5); }
+    70% { box-shadow: 0 0 0 6px rgba(79,209,197,0); }
+    100% { box-shadow: 0 0 0 0 rgba(79,209,197,0); }
+  }
+
+  main {
+    position: relative;
+    flex: 1;
+    background: #000;
+    overflow: hidden;
+    min-height: 0;
+  }
+  video#remote {
+    width: 100%; height: 100%; object-fit: contain; background: #000;
+    touch-action: none;
+    transform-origin: center center;
+  }
+  video#local {
+    position: absolute;
+    width: 19%;
+    max-width: 150px;
+    min-width: 84px;
+    right: calc(14px + env(safe-area-inset-right));
+    bottom: calc(14px + env(safe-area-inset-bottom));
+    border-radius: 10px;
+    border: 1px solid var(--line);
+    background: #000;
+    transform: scaleX(-1);
+    transition: width 0.2s ease, height 0.2s ease, opacity 0.2s ease, border-radius 0.2s ease;
+    cursor: pointer;
+  }
+  /* Tapping the self-preview shrinks it to a small, mostly-out-of-the-way
+     circle — useful when it's sitting on top of something the trainer
+     needs to see. Tap again to restore. */
+  video#local.minimized {
+    width: 44px !important;
+    max-width: 44px !important;
+    min-width: 44px !important;
+    height: 44px !important;
+    border-radius: 50%;
+    opacity: 0.6;
+    object-fit: cover;
+  }
+  .placeholder {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 10px; color: var(--muted); text-align: center; padding: 0 24px;
+  }
+  .placeholder .big { font-size: 16px; color: var(--text); }
+  .placeholder .small { font-size: 13px; max-width: 320px; }
+
+  footer {
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
+    padding: 14px 16px calc(14px + env(safe-area-inset-bottom));
+    padding-left: calc(16px + env(safe-area-inset-left));
+    padding-right: calc(16px + env(safe-area-inset-right));
+    border-top: 1px solid var(--line);
+    flex-shrink: 0;
+    background: var(--panel);
+    transition: max-height 0.35s ease, opacity 0.25s ease, padding 0.35s ease;
+    max-height: 340px;
+    overflow: hidden;
+  }
+
+  /* Fullscreen auto-hide: header/footer collapse away after a few seconds of
+     inactivity so the video fills the screen, and fade back in on any
+     mouse move, tap, or keypress. */
+  body.chrome-hidden header,
+  body.chrome-hidden footer {
+    max-height: 0;
+    opacity: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+    border-color: transparent;
+  }
+  select {
+    background: var(--bg); color: var(--text);
+    border: 1px solid var(--line); border-radius: 8px;
+    padding: 8px 10px; font-size: 13px; max-width: 170px;
+  }
+  button {
+    border: 1px solid var(--line); background: var(--bg); color: var(--text);
+    border-radius: 10px; padding: 10px 16px; font-size: 14px; font-weight: 500;
+    cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); }
+  button.active-off { background: rgba(224,85,111,0.15); border-color: var(--danger); color: var(--danger); }
+  button.primary { background: var(--accent); color: #06201d; border-color: var(--accent); }
+  button.primary.end { background: var(--danger); border-color: var(--danger); color: #fff; }
+  button:disabled { opacity: 0.4; cursor: default; }
+
+  .controls-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; justify-content: center; }
+
+  @media (max-width: 520px) {
+    select { max-width: 130px; font-size: 12px; }
+    button { padding: 9px 12px; font-size: 13px; }
+  }
+
+  /* ===== DIAGNOSTICS MODULE: CSS START =====
+     Everything between these markers can be deleted as a block to fully
+     remove the low-bandwidth toggle's styling. It does not affect any
+     other rule above it. */
+  .subtle-row { opacity: 0.65; }
+  .subtle-row button {
+    padding: 6px 12px; font-size: 12px; border-radius: 8px;
+  }
+  /* ===== DIAGNOSTICS MODULE: CSS END ===== */
+
+  /* ===== CAMERA NAMING MODULE: CSS START =====
+     Styling for the "Name Camera" panel. Delete this block (and the
+     matching HTML / JS blocks) to remove the feature entirely. */
+  #cameraNamePanel { flex-wrap: wrap; }
+  #cameraNamePanel[hidden] { display: none; } /* without this, .controls-row's display:flex wins the tie and the panel never actually hides */
+  .cam-name-label { font-size: 11px; color: var(--muted); width: 100%; text-align: center; }
+  /* ===== CAMERA NAMING MODULE: CSS END ===== */
+
+  /* ===== CAMERA REMOTE SWITCH MODULE: CSS START =====
+     A small floating bar over the top of the remote video, showing one
+     button per camera the OTHER side has available, so either person can
+     ask the other side to switch cameras without touching their own
+     dropdown. Delete this block (and the matching HTML/JS blocks) to
+     remove the feature entirely. */
+  #camSwitchOverlay {
+    position: absolute;
+    top: calc(10px + env(safe-area-inset-top));
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 5;
+    display: flex;
+    gap: 8px;
+    max-width: calc(100% - 24px);
+    overflow-x: auto;
+    background: rgba(20,23,28,0.78);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 6px;
+  }
+  #camSwitchOverlay[hidden] { display: none; }
+  #camSwitchOverlay button {
+    padding: 7px 12px; font-size: 12px; border-radius: 8px; white-space: nowrap; flex-shrink: 0;
+  }
+  #camSwitchOverlay button.cam-switch-active {
+    border-color: var(--accent); color: var(--accent);
+  }
+  /* ===== CAMERA REMOTE SWITCH MODULE: CSS END ===== */
+</style>
+</head>
+<body>
+
+<header>
+  <div class="title">Training Call</div>
+  <div class="status"><span class="dot" id="statusDot"></span><span id="statusText">Not connected</span></div>
+</header>
+
+<main>
+  <video id="remote" autoplay playsinline></video>
+  <div class="placeholder" id="placeholder">
+    <div class="big">Connecting…</div>
+    <div class="small" id="placeholderSub">This starts automatically. Send this same link to the other side — whoever opens it second connects the call.</div>
+  </div>
+  <video id="local" autoplay playsinline muted></video>
+  <!-- ===== CAMERA REMOTE SWITCH MODULE: overlay START =====
+       Populated at runtime with one button per camera the other side
+       reports having. Hidden whenever the other side has fewer than 2
+       cameras (nothing useful to switch to). -->
+  <div id="camSwitchOverlay" hidden></div>
+  <!-- ===== CAMERA REMOTE SWITCH MODULE: overlay END ===== -->
+</main>
+
+<footer>
+  <div class="controls-row">
+    <select id="cameraSelect" title="Camera"></select>
+    <select id="micSelect" title="Microphone"></select>
+  </div>
+  <div class="controls-row">
+    <button id="muteBtn">Mute</button>
+    <button id="camBtn">Camera off</button>
+    <button id="fullscreenBtn">Fullscreen</button>
+    <button id="callBtn" class="primary">Start Call</button>
+  </div>
+  <!-- ===== DIAGNOSTICS MODULE: bandwidth toggle button START =====
+       Delete this whole <div> to remove the low-bandwidth control from
+       the page. No other markup depends on it. -->
+  <div class="controls-row subtle-row">
+    <button id="bandwidthBtn" title="Lower outgoing video quality to save bandwidth">Low Bandwidth: Off</button>
+  </div>
+  <!-- ===== DIAGNOSTICS MODULE: bandwidth toggle button END ===== -->
+
+  <!-- ===== CAMERA NAMING MODULE: controls START =====
+       Lets you assign a persistent custom name (e.g. "GymE-1") to whichever
+       camera is currently selected in the dropdown above — useful when two
+       cameras are the same model and the browser shows the same generic
+       label for both. Delete this whole block (both <div> rows) plus the
+       matching CSS and JS blocks to remove the feature; nothing else
+       depends on it. -->
+  <div class="controls-row subtle-row">
+    <button id="nameCameraBtn" title="Give the currently selected camera a custom name">Name Camera</button>
+  </div>
+  <div class="controls-row subtle-row" id="cameraNamePanel" hidden>
+    <span class="cam-name-label" id="cameraNamePanelLabel"></span>
+    <button class="cam-name-preset" data-name="GymE-1">GymE-1</button>
+    <button class="cam-name-preset" data-name="GymE-2">GymE-2</button>
+    <button id="cameraNameCustomBtn">Custom…</button>
+    <button id="cameraNameClearBtn">Clear name</button>
+    <button id="cameraNameCancelBtn">Cancel</button>
+  </div>
+  <!-- ===== CAMERA NAMING MODULE: controls END ===== -->
+
+  <!-- ===== SELF-VIEW POPOUT MODULE: controls START =====
+       Opens your own camera feed in a plain separate window near the main
+       screen — drag/resize it onto a second monitor manually. Shows the
+       UNMIRRORED feed: the small preview above is flipped via CSS for
+       comfort, but this window (like the feed Maria actually receives) is
+       not. Delete this whole <div> plus the matching JS block near the end
+       of the script to remove the feature; nothing else depends on it. -->
+  <div class="controls-row subtle-row">
+    <button id="popoutBtn" title="Open your camera feed in a separate window you can drag to a second monitor">Pop Out My View</button>
+  </div>
+  <!-- ===== SELF-VIEW POPOUT MODULE: controls END ===== -->
+</footer>
+
+<script>
+(() => {
+  const remoteVideo = document.getElementById('remote');
+  const localVideo = document.getElementById('local');
+  const cameraSelect = document.getElementById('cameraSelect');
+  const micSelect = document.getElementById('micSelect');
+  const muteBtn = document.getElementById('muteBtn');
+  const camBtn = document.getElementById('camBtn');
+  const fullscreenBtn = document.getElementById('fullscreenBtn');
+  const callBtn = document.getElementById('callBtn');
+  const statusDot = document.getElementById('statusDot');
+  const statusText = document.getElementById('statusText');
+  const placeholder = document.getElementById('placeholder');
+  const placeholderSub = document.getElementById('placeholderSub');
+
+  const LS_CAMERA = 'trainingCall:cameraId';
+  const LS_MIC = 'trainingCall:micId';
+  const LS_HAS_CONNECTED = 'trainingCall:hasConnectedBefore';
+  const LS_CLIENT_ID = 'trainingCall:clientId';
+
+  // SEAT-SWAP MODULE: a persistent per-device identity, so a reconnect (Wi-Fi
+  // drop, page refresh, launcher relaunch) can be recognized by the server as
+  // "this same client coming back" instead of a second, competing device.
+  // Stored in localStorage so it survives refreshes and relaunches on this
+  // profile (see ops/gymcam-dualcam-remap-launch.sh's persistent
+  // --user-data-dir). Generated once; reused forever after.
+  function getOrCreateClientId() {
+    try {
+      let id = localStorage.getItem(LS_CLIENT_ID);
+      if (id) return id;
+      id = (window.crypto && typeof window.crypto.randomUUID === 'function')
+        ? window.crypto.randomUUID()
+        : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+      localStorage.setItem(LS_CLIENT_ID, id);
+      return id;
+    } catch (e) {
+      // localStorage unavailable (private mode, etc.) — fall back to a
+      // per-load id. Reconnects in this session just won't be recognized;
+      // behavior degrades to the pre-seat-swap "anonymous seat" path.
+      return (window.crypto && typeof window.crypto.randomUUID === 'function')
+        ? window.crypto.randomUUID()
+        : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+    }
+  }
+  const clientId = getOrCreateClientId();
+
+  const params = new URLSearchParams(location.search);
+  const room = params.get('room') || 'gym';
+
+  // FAMILY-FOOLPROOF BRIDGE — Guarantee A (PER-CAMERA). The native launcher
+  // resolves cameras by stable USB serial at the OS layer and appends inv=door.
+  // Two PIXYs need DIFFERENT inverts: the door (GymE-2) is tilt ON / pan ON, the
+  // rack (GymE-1) is tilt ON / pan OFF (measured — the rack genuinely differs on
+  // pan). See the ORDER-KEYED note immediately below for how each camera's pair is
+  // now selected — by enumeration POSITION, launcher-pinned by serial — superseding
+  // the earlier deviceId-hash map, which a cold boot could silently cross-wire.
+  // Guarantee A (PER-CAMERA, ORDER-KEYED) — identity by enumeration POSITION,
+  // not by deviceId. The serial-resolving launcher (gymcam-dualcam-remap-launch.sh)
+  // pins the physical DOOR onto /dev/video0 and the RACK onto /dev/video2 by
+  // hardware serial on every launch, so the browser ALWAYS enumerates door first,
+  // rack second — regardless of how a cold boot re-shuffled USB. We therefore key
+  // each camera's invert pair + role name off its INDEX in the enumerated list
+  // (which the launcher controls) instead of off the deviceId hash (which it does
+  // not). deviceId is HMAC(salt, /dev/videoN): it names the node NUMBER, not the
+  // camera — proven 2026-08-01 by lens-cover under the remap. A cold-boot swap moves
+  // which camera sits on video0 but not the hash string on video0, which is exactly
+  // why deviceId-keying broke and index-keying cannot. deviceId is still used as a
+  // within-session handle for getUserMedia + the camera-switch messages, where it is
+  // perfectly stable. Param absent -> the page behaves exactly as the base build.
+  const AF_FORCE_MODE = (params.get('inv') === 'door');
+  // ===== TELEMETRY MODULE: gym/trainer role latch ===========================
+  // Declared immediately after AF_FORCE_MODE, before any afdiag() call exists,
+  // so telemIsTrainer() is safe to call from the very first afdiag() line.
+  // Starts from AF_FORCE_MODE (set only by the gym launcher's ?inv=door) and
+  // latches true the first time a PTZ (tilt-capable) camera is adopted -- see
+  // the 1s telemetry tick below. Never reverts once true.
+  let telemIsGym = AF_FORCE_MODE;
+  const telemIsTrainer = () => !telemIsGym;
+  // State for the log-stream/heartbeat/sigprobe module below -- declared here,
+  // alongside the role latch, so every value exists before any afdiag() call
+  // (afdiag()'s enqueue hook reads telemIsTrainer() from its very first
+  // invocation in the page's startup sequence).
+  const TELEM_LS_QUEUE = 'telemLogQueue_v1';
+  const TELEM_QUEUE_MAX = 2000;       // in-memory queue cap -- oldest lines drop first
+  const TELEM_STALE_MS = 6 * 60 * 60 * 1000; // discard queued lines older than 6h on load
+  const TELEM_CHUNK_MAX_LINES = 50;   // at most this many lines per control-channel message
+  const TELEM_CHUNK_MAX_BYTES = 8192; // ...and stop adding lines past ~8KB of JSON
+  const TELEM_BUFFERED_AMOUNT_MAX = 65536; // skip sending this tick if channel backlog >= 64KB
+  let telemQueue = [];                // lines not yet sent (or not yet confirmed sent)
+  let telemQueueDirty = false;        // set on any mutation; cleared once mirrored
+  let telemHbSeq = 0;
+  let telemHbLastAt = 0;
+  let telemSigprobeSeq = 0;
+  // ===== TELEMETRY MODULE END (role latch) ===================================
+  //  index : { t: invertTilt, p: invertPan, role: display name }
+  const AF_ROLE_BY_INDEX = AF_FORCE_MODE ? [
+    { t: true, p: true,  role: 'Door' },   // index 0 — launcher pins the door here (pan ON)
+    { t: true, p: false, role: 'Rack' }    // index 1 — rack (pan OFF)
+  ] : null;
+  // Position of a deviceId in the current enumerated camera list. cameraSelect is
+  // built in enumerate order by listDevices(); -1 if not found.
+  function afCameraIndex(deviceId) {
+    return [...cameraSelect.options].findIndex((o) => o.value === deviceId);
+  }
+  // Role/invert pair for a camera by its enumeration position. null in non-forced
+  // mode; null for an out-of-range index (>=2 or not found) -> treated UNRECOGNISED.
+  function afRoleFor(deviceId) {
+    if (!AF_ROLE_BY_INDEX) return null;
+    const i = afCameraIndex(deviceId);
+    return (i >= 0 && i < AF_ROLE_BY_INDEX.length) ? AF_ROLE_BY_INDEX[i] : null;
+  }
+  // Fallback for a camera whose position is out of range (should not happen under
+  // the remap launcher, which presents exactly two). pan:false so it cannot run
+  // away on pan; auto-framing is separately HELD.
+  const AF_FORCE_FALLBACK = { t: true, p: false };
+  let afInvUnconfirmed = false;  // set true when an unrecognised camera is adopted
+  console.log('[build] index-pingpong 2026-10-24 — inv=' +
+    (params.get('inv') || '(none)') + (AF_FORCE_MODE ? ' (order-keyed: index0=Door, index1=Rack)' : ''));
+
+  // Google's public STUN servers — free, no signup, fine for most home networks.
+  // ICE tries these (and any direct path) first; they're enough for wifi-to-wifi calls.
+  //
+  // TURN fallback (Metered.ca free tier, 20GB/month) — only used if a direct/STUN
+  // path can't be found (e.g. restrictive cellular networks). Credentials below are
+  // tied to our free account quota, not a security secret — TURN creds are meant to
+  // ship to the client, that's how the protocol works. If the call connects fine
+  // without it (most sessions will), these entries simply go unused.
+  const ICE_SERVERS = [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun.relay.metered.ca:80' },
+    {
+      urls: 'turn:standard.relay.metered.ca:80',
+      username: '3781fe1f6d857864a846de77',
+      credential: 'epirZplvHuT7vJb1'
+    },
+    {
+      urls: 'turn:standard.relay.metered.ca:80?transport=tcp',
+      username: '3781fe1f6d857864a846de77',
+      credential: 'epirZplvHuT7vJb1'
+    },
+    {
+      urls: 'turn:standard.relay.metered.ca:443',
+      username: '3781fe1f6d857864a846de77',
+      credential: 'epirZplvHuT7vJb1'
+    },
+    {
+      urls: 'turns:standard.relay.metered.ca:443?transport=tcp',
+      username: '3781fe1f6d857864a846de77',
+      credential: 'epirZplvHuT7vJb1'
+    }
+  ];
+
+  let localStream = null;
+  let pc = null;
+  let ws = null;
+  let inCall = false;
+  let roomFull = false; // set on server 'full' -- gates the room-busy retry loop below
+  let replaced = false; // SEAT-SWAP MODULE: set on server 'replaced' -- this tab was swapped out by our own reconnect elsewhere; never auto-retry
+  let pendingCandidates = [];
+  let amCaller = false; // only the caller initiates ICE restarts, to avoid both sides colliding
+  let controlChannel = null; // CAMERA REMOTE SWITCH MODULE: data channel for cross-side camera control
+  let wsOpenedAt = 0; // TELEMETRY MODULE: wall-clock ms when the current ws opened, for TELEM-HB wsAge
+  // PINGPONG MODULE: app-level signaling liveness (see the PINGPONG block below
+  // the TELEMETRY module). Declared here so onopen/onmessage can touch them.
+  let pingSeq = 0;
+  let lastPongAt = 0;    // pong baseline -- reset on ws open and on tab-visible
+  let lastRtt = null;    // ms, from the most recent pong
+  let pongSeen = false;  // latches true on the first pong ever: proves the server speaks ping/pong
+  let probe = null;      // in-flight check ping after a long hide: { seq, socket, hiddenFor, timer }
+  let disconnectTimer = null;
+  let iceRestartAttempts = 0;
+  const MAX_ICE_RESTARTS = 4;
+
+  // RECOVER MODULE: consolidated single-timer signaling retry (replaces the old
+  // untracked ws.onclose setTimeout + the separate roomFullRetryTimer -- both could
+  // fire independently and open a second concurrent socket sharing the same cid,
+  // which is what produced the spurious REPLACED eviction on 2026-09-27).
+  let signalRetryTimer = null;
+  let signalRetryAttempt = 0;
+  const SIGNAL_RETRY_BASE_MS = 1000;
+  const SIGNAL_RETRY_MAX_MS = 30000;
+  const SIGNAL_RETRY_MAX_EXPONENT = 6;
+  let rebuildingPc = false; // guards attemptIceRestart() vs rebuildPeerConnection() from racing each other
+  let joinOfferSent = false; // guards against a duplicate offer from a 'request-offer' arriving mid-join
+  let hiddenAt = 0; // timestamp of the last visibilitychange -> hidden, for the forced-reconnect-after-hidden check
+  const FORCE_RECONNECT_HIDDEN_MS = 10000;
+
+  // RECOVER MODULE: paced media-rebuild ladder (separate from the fast ICE-restart
+  // ladder below -- this paces REBUILDS specifically, so a sustained outage doesn't
+  // hammer rebuild attempts back-to-back).
+  let mediaRebuildAttempt = 0;
+  let mediaRebuildTimer = null;
+  const MEDIA_REBUILD_BASE_MS = 2000;
+  const MEDIA_REBUILD_MAX_MS = 30000;
+
+  // Pinch-to-zoom / double-tap-to-zoom on the remote video specifically.
+  // This is deliberately implemented as our own CSS transform on the video
+  // element rather than relying on the browser's page-level zoom (which we
+  // disabled in the viewport meta tag, since native page zoom on a live
+  // video stream caused freezes/disconnects). Scoping it to just this
+  // element keeps the rest of the page (and the connection) untouched.
+  let remoteZoom = 1;
+  let remotePanX = 0;
+  let remotePanY = 0;
+  let pinchStartDist = 0;
+  let pinchStartZoom = 1;
+  let lastTapTime = 0;
+  let lastTapX = 0;
+  let lastTapY = 0;
+  let panActive = false;
+  let panStartX = 0;
+  let panStartY = 0;
+  let panOriginX = 0;
+  let panOriginY = 0;
+  const MAX_REMOTE_ZOOM = 4;
+  const DOUBLE_TAP_ZOOM = 2.5;
+
+  function setStatus(text, mode) {
+    statusText.textContent = text;
+    statusDot.className = 'dot' + (mode ? ' ' + mode : '');
+  }
+
+  function setPlaceholder(big, small, show) {
+    placeholder.style.display = show ? 'flex' : 'none';
+    if (big !== null) placeholder.querySelector('.big').textContent = big;
+    if (small !== undefined && small !== null) placeholderSub.textContent = small;
+  }
+
+  async function listDevices() {
+    // AF DIAGNOSTIC LOGGER: log-only -- distinguish the init call (no args)
+    // from an ondevicechange-triggered call (browser passes the Event as the
+    // first arg) without touching either call site below.
+    const afdiagListReason = (arguments.length && arguments[0] && arguments[0].type === 'devicechange') ? 'devicechange' : 'init';
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const prevCam = cameraSelect.value || localStorage.getItem(LS_CAMERA);
+    const prevMic = micSelect.value || localStorage.getItem(LS_MIC);
+    cameraSelect.innerHTML = '';
+    micSelect.innerHTML = '';
+    let camCount = 0, micCount = 0;
+    devices.forEach((d) => {
+      if (d.kind === 'videoinput') {
+        camCount++;
+        const opt = document.createElement('option');
+        opt.value = d.deviceId;
+        opt.textContent = d.label || `Camera ${camCount}`;
+        rawCameraLabels[d.deviceId] = opt.textContent; // CAMERA NAMING MODULE
+        cameraSelect.appendChild(opt);
+      } else if (d.kind === 'audioinput') {
+        micCount++;
+        const opt = document.createElement('option');
+        opt.value = d.deviceId;
+        opt.textContent = d.label || `Microphone ${micCount}`;
+        micSelect.appendChild(opt);
+      }
+    });
+    if (prevCam && [...cameraSelect.options].some((o) => o.value === prevCam)) cameraSelect.value = prevCam;
+    if (prevMic && [...micSelect.options].some((o) => o.value === prevMic)) micSelect.value = prevMic;
+    relabelCameraOptions(); // CAMERA NAMING MODULE: apply any saved custom camera names
+    sendCameraList(); // CAMERA REMOTE SWITCH MODULE: let the other side know our current camera options
+    // AF DIAGNOSTIC LOGGER: log-only -- full camera list + why this run
+    // happened, so a "disappears from switcher" incident shows exactly what
+    // enumerateDevices returned and whether it was init or a devicechange.
+    try {
+      const afdiagCamList = [...cameraSelect.options]
+        .map((o) => (o.textContent || '(no label)') + ' [' + (o.value || '').slice(0, 8) + ']')
+        .join(', ');
+      afdiag('listDevices (' + afdiagListReason + ') — ' + camCount + ' camera(s): ' + (afdiagCamList || 'none'));
+    } catch (e) {}
+  }
+
+  async function startLocalStream() {
+    const videoId = cameraSelect.value || undefined;
+    const audioId = micSelect.value || undefined;
+    // AUTO-FRAME EDIT: pan/tilt/zoom:true asks for the PTZ capability so the
+    // active track exposes motor control to applyConstraints(). This is what
+    // triggers Chromium's SECOND permission prompt (camera-control), which is
+    // invisible in --app= mode — launch this page in a normal window.
+    const ptz = { pan: true, tilt: true, zoom: true };
+    const baseVideo = { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } };
+    const videoBase = videoId ? Object.assign({ deviceId: { exact: videoId } }, baseVideo) : Object.assign({}, baseVideo);
+    const constraints = {
+      video: Object.assign({}, videoBase, ptz),
+      audio: audioId ? { deviceId: { exact: audioId } } : true
+    };
+
+    // If the PTZ request is refused outright, fall back to a plain stream so the
+    // CALL still happens. Auto-framing is the feature; the call is the point.
+    let newStream;
+    try {
+      newStream = await navigator.mediaDevices.getUserMedia(constraints);
+    } catch (ptzErr) {
+      newStream = await navigator.mediaDevices.getUserMedia({
+        video: videoBase,
+        audio: audioId ? { deviceId: { exact: audioId } } : true
+      });
+    }
+
+    if (localStream) {
+      localStream.getTracks().forEach((t) => t.stop());
+    }
+    localStream = newStream;
+    localVideo.srcObject = localStream;
+    popoutUpdateStream(); // SELF-VIEW POPOUT MODULE: keep the popped-out window's feed in sync with camera switches
+
+    if (pc) {
+      const videoTrack = localStream.getVideoTracks()[0];
+      const audioTrack = localStream.getAudioTracks()[0];
+      const senders = pc.getSenders();
+      const vSender = senders.find((s) => s.track && s.track.kind === 'video');
+      const aSender = senders.find((s) => s.track && s.track.kind === 'audio');
+      if (vSender && videoTrack) vSender.replaceTrack(videoTrack);
+      if (aSender && audioTrack) aSender.replaceTrack(audioTrack);
+    }
+  }
+
+  async function init() {
+    try {
+      // Request permission once with defaults so device labels become visible,
+      // then list devices properly.
+      const tempStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      tempStream.getTracks().forEach((t) => t.stop());
+      await listDevices();
+      navigator.mediaDevices.ondevicechange = listDevices;
+      // Opening the page is meant to be the only step on repeat visits — but
+      // on the very first visit from a given browser, skip the auto-start so
+      // there's a calm window (with Safari's normal toolbar still visible)
+      // to set up "Add to Home Screen" before the page takes over the screen.
+      if (localStorage.getItem(LS_HAS_CONNECTED)) {
+        startCallFlow();
+      } else {
+        setPlaceholder('Ready when you are', 'First time here: feel free to set up "Add to Home Screen" now, then tap Start Call. After this, it\'ll connect automatically every time.', true);
+      }
+    } catch (err) {
+      setPlaceholder('Camera or microphone blocked', 'Allow camera and microphone access for this page in your browser settings, then reload.', true);
+      setStatus('Permission needed', 'bad');
+    }
+  }
+
+  function wsUrl() {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${proto}//${location.host}?room=${encodeURIComponent(room)}&cid=${encodeURIComponent(clientId)}`;
+  }
+
+  // RECOVER MODULE: single consolidated retry path (replaces the old untracked
+  // ws.onclose setTimeout + the separate roomFullRetryTimer). Capped exponential
+  // backoff with jitter; never gives up permanently.
+  function computeBackoff(attempt) {
+    const exp = Math.min(attempt, SIGNAL_RETRY_MAX_EXPONENT);
+    const capped = Math.min(SIGNAL_RETRY_MAX_MS, SIGNAL_RETRY_BASE_MS * Math.pow(2, exp - 1));
+    return Math.round(capped * (0.5 + Math.random() * 0.5)); // 50-100% jitter, avoids synchronized retries
+  }
+
+  function scheduleReconnect(reason) {
+    if (!inCall || replaced) return;
+    if (signalRetryTimer) return; // ONE timer only -- a second scheduling attempt in this window is a safe no-op
+    signalRetryAttempt++;
+    const delay = computeBackoff(signalRetryAttempt);
+    afdiag('RECONNECT scheduled — reason=' + reason + ' attempt=' + signalRetryAttempt + ' delay=' + delay + 'ms');
+    setStatus('Reconnecting… (attempt ' + signalRetryAttempt + ')', 'warn');
+    signalRetryTimer = setTimeout(() => {
+      signalRetryTimer = null;
+      if (!inCall || replaced) return;
+      connectSignaling();
+    }, delay);
+  }
+
+  function cancelReconnect() {
+    if (signalRetryTimer) { clearTimeout(signalRetryTimer); signalRetryTimer = null; }
+  }
+
+  function reconnectNow(reason, force) {
+    if (!inCall || replaced) return;
+    if (!force && ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+    afdiag('RECONNECT-NOW trigger — reason=' + reason + ' force=' + !!force + ' wsState=' + (ws ? ws.readyState : 'null'));
+    cancelReconnect();
+    connectSignaling();
+  }
+
+  function connectSignaling() {
+    if (ws) { try { ws.close(4001, 'superseded'); } catch (e) {} } // close the old one FIRST, always
+    const mySocket = new WebSocket(wsUrl());
+    ws = mySocket;
+
+    mySocket.onopen = () => {
+      if (mySocket !== ws) return;
+      wsOpenedAt = Date.now(); // TELEMETRY MODULE: feeds TELEM-HB's wsAge field
+      lastPongAt = Date.now(); // PINGPONG MODULE: fresh socket gets a full 40s before the watchdog can fire
+      setStatus('Waiting for the other side to join…', 'warn');
+    };
+
+    mySocket.onmessage = async (event) => {
+      if (mySocket !== ws) { afdiag('WS MESSAGE ignored (superseded socket)'); return; }
+      const msg = JSON.parse(event.data);
+
+      if (msg.type === 'joined') {
+        afdiag('SIGNAL joined — peers=' + msg.peers);
+        // SEAT-SWAP MODULE: being admitted at all means we were not turned
+        // away for a full room this time -- clear any room-busy backoff
+        // state left over from earlier retries.
+        roomFull = false;
+        cancelReconnect();
+        if (signalRetryAttempt > 0) {
+          afdiag('RECONNECT succeeded after ' + signalRetryAttempt + ' attempt(s)');
+          setStatus('Reconnected', 'live');
+        }
+        signalRetryAttempt = 0;
+        amCaller = (msg.peers === 2); // deterministic every join -- at most one side ever sees peers===2 for a given pairing
+        joinOfferSent = false; // fresh join cycle -- reset the double-offer guard
+        if (amCaller) {
+          if (!pc) {
+            joinOfferSent = true; // set BEFORE the awaits -- a 'request-offer' can arrive mid-await
+            await createPeerConnection();
+            await makeOffer();
+          } else if (pc.connectionState !== 'connected' && pc.connectionState !== 'connecting') {
+            afdiag('SIGNAL joined (rejoin) — pc state=' + pc.connectionState + ' — renegotiating');
+            joinOfferSent = true; // set BEFORE the await, same reason
+            await attemptIceRestart();
+          }
+          // else: pc looks connected/connecting -- leave it alone for now; if the other
+          // side actually has nothing (single-sided-drop gap), its 'peer-joined' handler
+          // will send us 'request-offer' and we act on it below.
+        }
+      } else if (msg.type === 'request-offer') {
+        // Gap fix: the other side had no pc at all when it got our 'joined'/'peer-joined'
+        // (torn down by an earlier 'peer-left' on its end) and our own pc merely LOOKED
+        // connected above, so we never offered. Rebuild for real instead of waiting for
+        // organic ICE failure detection.
+        afdiag('SIGNAL request-offer received — amCaller=' + amCaller + ' pc=' + (pc ? pc.connectionState : 'null') + ' joinOfferSent=' + joinOfferSent);
+        if (!amCaller) {
+          afdiag('SIGNAL request-offer ignored — not the caller');
+        } else if (joinOfferSent) {
+          afdiag('SIGNAL request-offer ignored — an offer for this join is already in flight');
+        } else {
+          joinOfferSent = true;
+          await rebuildPeerConnection('request-offer');
+        }
+      } else if (msg.type === 'peer-joined') {
+        afdiag('SIGNAL peer-joined');
+        if (pc && pc.connectionState === 'connected') {
+          setStatus('Connected', 'live');
+        } else {
+          setStatus('Other side joined — connecting…', 'warn');
+        }
+        amCaller = false; // the side that just joined (peers===2 on ITS OWN 'joined') is the caller, never us
+        if (!pc) {
+          await createPeerConnection();
+          afdiag('SIGNAL peer-joined — no local pc, requesting fresh offer');
+          send({ type: 'request-offer' });
+        } else if (pc.connectionState !== 'connected' && pc.connectionState !== 'connecting') {
+          afdiag('SIGNAL peer-joined — pc state=' + pc.connectionState + ' (not our role to offer; waiting for their offer)');
+        }
+        // else: pc already connected/connecting -- both sides kept a live pc (e.g. a pure
+        // signaling-server restart); leave it alone.
+      } else if (msg.type === 'offer') {
+        afdiag('SIGNAL offer received' + (pc ? ' — local pc state=' + pc.connectionState : ' — no local pc'));
+        if (pc && (pc.connectionState === 'failed' || pc.connectionState === 'closed')) {
+          // Callee-side offer-reset: a fresh offer arrived while our own pc is dead --
+          // this is the caller's rebuild landing here. Reset locally so we never answer
+          // into a dead pc. No new signaling message needed; inferred purely from our
+          // own pc.connectionState. Preserve amCaller (teardownPeerConnection zeroes it).
+          afdiag('SIGNAL offer — local pc state=' + pc.connectionState + ' — resetting before answering');
+          const wasCaller = amCaller;
+          teardownPeerConnection();
+          amCaller = wasCaller;
+        }
+        if (!pc) await createPeerConnection();
+        await pc.setRemoteDescription(new RTCSessionDescription(msg));
+        await flushPendingCandidates();
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        send({ type: 'answer', sdp: answer.sdp });
+      } else if (msg.type === 'answer') {
+        afdiag('SIGNAL answer received');
+        await pc.setRemoteDescription(new RTCSessionDescription(msg));
+        await flushPendingCandidates();
+      } else if (msg.type === 'candidate') {
+        if (pc && pc.remoteDescription) {
+          try { await pc.addIceCandidate(new RTCIceCandidate(msg.candidate)); } catch (e) {}
+        } else {
+          pendingCandidates.push(msg.candidate);
+        }
+      } else if (msg.type === 'peer-left') {
+        afdiag('SIGNAL peer-left');
+        setStatus('Other side disconnected', 'warn');
+        setPlaceholder('Call ended', 'The other side left. Tap Start Call to begin a new session.', true);
+        teardownPeerConnection();
+      } else if (msg.type === 'replaced') {
+        // SEAT-SWAP MODULE: the server saw another connection with this same
+        // device's clientId join this room (our own reconnect, a refresh, or
+        // another tab/window here) and evicted this socket's seat in its
+        // favor. Stand DOWN, do not retry -- retrying would just evict that
+        // new occupant right back, and the two could ping-pong forever.
+        afdiag('SIGNAL replaced — standing down, no retry');
+        replaced = true;
+        cancelReconnect();
+        inCall = false;
+        callBtn.textContent = 'Start Call';
+        callBtn.classList.remove('end');
+        // Close the old pc BEFORE the final setStatus below. Left open, it
+        // keeps running its own lifecycle (the far side is gone, so it drifts
+        // to 'disconnected' then 'failed' on its own timeline) and its
+        // onconnectionstatechange handler would overwrite "Call moved" with
+        // "Connection wobbling…" / "Connection lost — reconnecting…" minutes
+        // later, plus attemptIceRestart() would fire pointlessly. teardown
+        // also clears disconnectTimer so that queued restart never runs.
+        teardownPeerConnection();
+        // Release the camera/mic and clear the local preview -- this tab is
+        // no longer part of any call, so it has no business holding the
+        // devices. startLocalStream() re-acquires them from scratch the next
+        // time this tab's Start Call is pressed (startCallFlow() only calls
+        // it when localStream is null).
+        if (localStream) {
+          localStream.getTracks().forEach((t) => t.stop());
+          localStream = null;
+        }
+        localVideo.srcObject = null;
+        setStatus('Taken over by another window', 'warn');
+        setPlaceholder('Call moved', 'This call was taken over by another window or reconnect on this device. Tap Start Call here only if you want to use this window instead.', true);
+      } else if (msg.type === 'full') {
+        // SEAT-SWAP MODULE: a full room is often a stale seat that just
+        // hasn't been cleaned up yet (heartbeat sweep, or the other side's
+        // own reconnect still in flight) rather than a permanent state, so
+        // keep retrying through the single consolidated retry path -- never
+        // give up permanently.
+        afdiag('SIGNAL full — room busy');
+        roomFull = true;
+        setStatus('Room busy — retrying…', 'warn');
+        setPlaceholder('Room busy', 'This link is already open on two devices. Retrying automatically…', true);
+        scheduleReconnect('room-full');
+      } else if (msg.type === 'sigprobe') {
+        // TELEMETRY MODULE: gym-side arrival of the trainer's signaling-path
+        // probe. Purely additive leaf -- no existing branch above is touched.
+        afdiagIngestRemote('SIGPROBE seq=' + msg.seq);
+      } else if (msg.type === 'pong') {
+        // PINGPONG MODULE: server's reply to our own ping (never relayed from the peer).
+        const now = Date.now();
+        lastPongAt = now;
+        pongSeen = true;
+        if (typeof msg.t === 'number') lastRtt = now - msg.t;
+        if (lastRtt !== null && lastRtt > 2000) afdiag('PONG seq=' + msg.seq + ' rtt=' + lastRtt + 'ms (slow)');
+        pongProbeAnswered(msg.seq, lastRtt);
+      }
+    };
+
+    mySocket.onclose = (event) => {
+      if (mySocket !== ws) { afdiag('WS CLOSE ignored (superseded socket) — code=' + event.code); return; }
+      afdiag('WS CLOSE — code=' + event.code + ' reason=' + (event.reason || '(none)') + ' wasClean=' + event.wasClean);
+      if (inCall && !replaced) setStatus('Signaling lost — retrying…', 'bad');
+      scheduleReconnect('ws-close');
+    };
+
+    mySocket.onerror = () => {
+      if (mySocket !== ws) return;
+      afdiag('WS ERROR');
+      // SEAT-SWAP MODULE: once this tab has been replaced, its status is
+      // final ("Call moved") -- don't let a trailing socket-error event
+      // (the server closing this socket right after 'replaced' can trigger
+      // one in some browsers) overwrite it.
+      if (replaced) return;
+      setStatus('Connection error', 'bad');
+    };
+  }
+
+  function send(msg) {
+    if (ws && ws.readyState === WebSocket.OPEN) { ws.send(JSON.stringify(msg)); return; }
+    // Narrow, zero-guesswork item-(c) fix: this is a PROVEN failure (we tried to send and
+    // the socket isn't usable), not a heuristic -- convert it into a real recovery trigger
+    // instead of silently dropping the message as before.
+    afdiag('SEND dropped — ws not open (state=' + (ws ? ws.readyState : 'null') + ') for type=' + (msg && msg.type));
+    reconnectNow('send-while-not-open');
+  }
+
+  async function flushPendingCandidates() {
+    for (const c of pendingCandidates) {
+      try { await pc.addIceCandidate(new RTCIceCandidate(c)); } catch (e) {}
+    }
+    pendingCandidates = [];
+  }
+
+  async function createPeerConnection() {
+    pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+
+    localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
+
+    // ===== CAMERA REMOTE SWITCH MODULE: open/receive the control channel =====
+    // Whichever side makes the offer also opens the data channel; the other
+    // side receives it via ondatachannel. Either way, setupControlChannel()
+    // wires up the same send/receive logic once it's ready.
+    if (amCaller) {
+      controlChannel = pc.createDataChannel('control');
+      setupControlChannel();
+    }
+    pc.ondatachannel = (event) => {
+      if (event.channel.label === 'control') {
+        controlChannel = event.channel;
+        setupControlChannel();
+      }
+    };
+    // ===== CAMERA REMOTE SWITCH MODULE END =====
+
+    pc.onicecandidate = (event) => {
+      if (event.candidate) send({ type: 'candidate', candidate: event.candidate });
+    };
+
+    pc.ontrack = (event) => {
+      remoteVideo.srcObject = event.streams[0];
+      setPlaceholder(null, null, false);
+    };
+
+    pc.onconnectionstatechange = () => {
+      if (!pc) return;
+      afdiag('PC connectionState=' + pc.connectionState);
+      if (pc.connectionState === 'connected') {
+        setStatus('Connected', 'live');
+        setPlaceholder(null, null, false);
+        clearTimeout(disconnectTimer);
+        iceRestartAttempts = 0; // reset once the connection is stably back
+        mediaRebuildAttempt = 0;
+        clearTimeout(mediaRebuildTimer);
+        mediaRebuildTimer = null;
+        localStorage.setItem(LS_HAS_CONNECTED, 'true');
+      } else if (pc.connectionState === 'disconnected') {
+        // 'disconnected' often self-heals within a few seconds (a brief
+        // Wi-Fi blip, a tab losing focus momentarily, etc.) — give it a
+        // short grace period before trying anything ourselves.
+        setStatus('Connection wobbling — recovering…', 'warn');
+        clearTimeout(disconnectTimer);
+        disconnectTimer = setTimeout(attemptIceRestart, 4000);
+      } else if (pc.connectionState === 'failed') {
+        setStatus('Connection lost — reconnecting…', 'bad');
+        clearTimeout(disconnectTimer);
+        attemptIceRestart();
+      } else if (pc.connectionState === 'connecting') {
+        setStatus('Connecting…', 'warn');
+      }
+    };
+
+    // RECOVER MODULE: log-only -- deliberately does not drive any recovery decision of
+    // its own, so there is only ever one state machine (onconnectionstatechange above)
+    // deciding when to act.
+    pc.oniceconnectionstatechange = () => {
+      if (!pc) return;
+      afdiag('PC iceConnectionState=' + pc.iceConnectionState);
+    };
+  }
+
+  async function attemptIceRestart(force) {
+    if (!pc || !amCaller) return; // only the caller renegotiates, to avoid both sides colliding
+    if (!force && pc.connectionState === 'connected') return; // already recovered on its own
+    if (rebuildingPc) return; // a rebuild is already in flight -- don't collide with it
+    if (iceRestartAttempts >= MAX_ICE_RESTARTS) {
+      afdiag('ICE RESTART exhausted (' + iceRestartAttempts + ' attempts) — falling back to paced rebuild');
+      scheduleMediaRebuild('ice-restart-exhausted');
+      return;
+    }
+    iceRestartAttempts++;
+    afdiag('ICE RESTART attempt ' + iceRestartAttempts + '/' + MAX_ICE_RESTARTS);
+    try {
+      const offer = await pc.createOffer({ iceRestart: true });
+      await pc.setLocalDescription(offer);
+      send({ type: 'offer', sdp: offer.sdp });
+    } catch (e) {
+      afdiag('ICE RESTART error — ' + (e && e.message));
+      // If this attempt fails to even start, the next state-change event
+      // (or the timer above) will trigger another try, up to the cap.
+    }
+  }
+
+  // RECOVER MODULE: paced media-rebuild ladder. Rebuilds (not individual ICE-restart
+  // attempts) are spaced by a capped, jittered backoff so a sustained outage doesn't
+  // hammer rebuild attempts back-to-back. Reset to 0 on a stable 'connected' above.
+  function computeMediaBackoff(attempt) {
+    const exp = Math.min(attempt, 6);
+    const capped = Math.min(MEDIA_REBUILD_MAX_MS, MEDIA_REBUILD_BASE_MS * Math.pow(2, exp - 1));
+    return Math.round(capped * (0.5 + Math.random() * 0.5));
+  }
+
+  function scheduleMediaRebuild(trigger) {
+    if (!amCaller || mediaRebuildTimer) return;
+    mediaRebuildAttempt++;
+    const delay = computeMediaBackoff(mediaRebuildAttempt);
+    afdiag('MEDIA REBUILD scheduled — trigger=' + trigger + ' attempt=' + mediaRebuildAttempt + ' delay=' + delay + 'ms');
+    mediaRebuildTimer = setTimeout(() => { mediaRebuildTimer = null; rebuildPeerConnection(trigger); }, delay);
+  }
+
+  async function rebuildPeerConnection(trigger) {
+    if (!amCaller || rebuildingPc) return; // same one-side-only discipline as attemptIceRestart
+    rebuildingPc = true;
+    afdiag('MEDIA REBUILD start — trigger=' + trigger + ' iceRestartAttempts=' + iceRestartAttempts);
+    setStatus('Rebuilding connection…', 'warn');
+    try {
+      const wasCaller = amCaller; // teardownPeerConnection() unconditionally resets amCaller=false -- capture first
+      teardownPeerConnection();
+      amCaller = wasCaller; // restore role so makeOffer() below still runs on the right side
+      iceRestartAttempts = 0; // fresh ICE-restart budget for the new pc's own lifecycle
+      if (!localStream) { afdiag('MEDIA REBUILD aborted — no local stream'); return; }
+      await createPeerConnection();
+      await makeOffer();
+      afdiag('MEDIA REBUILD offer sent');
+    } catch (e) {
+      afdiag('MEDIA REBUILD error — ' + (e && e.message));
+    } finally {
+      rebuildingPc = false;
+    }
+  }
+
+  async function makeOffer() {
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    send({ type: 'offer', sdp: offer.sdp });
+  }
+
+  function teardownPeerConnection() {
+    if (pc) { pc.close(); pc = null; }
+    remoteVideo.srcObject = null;
+    pendingCandidates = [];
+    clearTimeout(disconnectTimer);
+    amCaller = false;
+    iceRestartAttempts = 0;
+    resetRemoteZoom();
+    // CAMERA REMOTE SWITCH MODULE: the channel dies with the old pc, and any
+    // buttons we were showing described a connection that no longer exists.
+    controlChannel = null;
+    camSwitchOverlay.hidden = true;
+    camSwitchOverlay.innerHTML = '';
+  }
+
+  async function startCallFlow() {
+    if (inCall) return;
+    roomFull = false; // a deliberate Start Call clears any prior room-full stand-down
+    cancelReconnect();
+    signalRetryAttempt = 0;
+    replaced = false; // SEAT-SWAP MODULE: a deliberate Start Call clears any prior seat-swap stand-down
+    inCall = true;
+    callBtn.textContent = 'End Call';
+    callBtn.classList.add('end');
+    setPlaceholder('Connecting…', 'Waiting for the other side to join…', true);
+    try {
+      if (!localStream) await startLocalStream();
+      connectSignaling();
+    } catch (err) {
+      setStatus('Could not access camera/mic', 'bad');
+      inCall = false;
+      callBtn.textContent = 'Start Call';
+      callBtn.classList.remove('end');
+    }
+  }
+
+  function endCallFlow() {
+    inCall = false;
+    cancelReconnect(); // a manual End Call also cancels any pending reconnect
+    clearTimeout(mediaRebuildTimer);
+    mediaRebuildTimer = null;
+    callBtn.textContent = 'Start Call';
+    callBtn.classList.remove('end');
+    teardownPeerConnection();
+    if (ws) { ws.close(); ws = null; }
+    setStatus('Not connected', '');
+    setPlaceholder('Call ended', 'Tap Start Call to begin a new session.', true);
+  }
+
+  callBtn.addEventListener('click', () => {
+    if (!inCall) startCallFlow(); else endCallFlow();
+  });
+
+  // RECOVER MODULE: reconnect triggers beyond the passive retry timer -- if the tab
+  // comes back into view/focus, or the network comes back, check right now instead of
+  // waiting for the backoff timer.
+  document.addEventListener('visibilitychange', () => {
+    afdiag('PAGE visibilitychange — state=' + document.visibilityState);
+    if (document.visibilityState === 'hidden') {
+      hiddenAt = Date.now();
+    } else if (document.visibilityState === 'visible') {
+      const hiddenFor = hiddenAt ? (Date.now() - hiddenAt) : 0;
+      if (hiddenFor > FORCE_RECONNECT_HIDDEN_MS) {
+        // PINGPONG BUILD: check the socket with a ping before forcing a reconnect --
+        // a forced reconnect closes the seat and the other side tears its call down.
+        verifyOrReconnect(hiddenFor);
+      } else {
+        reconnectNow('visibilitychange');
+      }
+    }
+  });
+  window.addEventListener('pageshow', (e) => {
+    afdiag('PAGE pageshow — persisted=' + e.persisted);
+    const hiddenFor = hiddenAt ? (Date.now() - hiddenAt) : 0;
+    if (e.persisted || hiddenFor > FORCE_RECONNECT_HIDDEN_MS) {
+      reconnectNow('pageshow-forced', true);
+    } else {
+      reconnectNow('pageshow');
+    }
+  });
+  window.addEventListener('online', () => { afdiag('NETWORK online'); reconnectNow('online'); });
+  window.addEventListener('offline', () => { afdiag('NETWORK offline'); });
+  window.addEventListener('focus', () => { afdiag('PAGE focus'); reconnectNow('focus'); });
+  document.addEventListener('freeze', () => { afdiag('PAGE freeze'); }); // Page Lifecycle API, Chromium-only, log-only
+  document.addEventListener('resume', () => { afdiag('PAGE resume'); reconnectNow('resume'); });
+  window.addEventListener('pagehide', (e) => { afdiag('PAGE pagehide — persisted=' + e.persisted); });
+
+  // --- Fullscreen + auto-hiding controls -----------------------------------
+  // Goal: while in fullscreen, the header and footer fade away after a few
+  // seconds so the video fills the whole screen, then reappear the moment
+  // the mouse moves, the screen is tapped, or a key is pressed.
+  let hideTimer = null;
+
+  function revealChrome() {
+    document.body.classList.remove('chrome-hidden');
+    clearTimeout(hideTimer);
+    if (document.fullscreenElement) {
+      hideTimer = setTimeout(() => {
+        document.body.classList.add('chrome-hidden');
+      }, 3000);
+    }
+  }
+
+  document.addEventListener('mousemove', revealChrome);
+  document.addEventListener('touchstart', revealChrome);
+  document.addEventListener('keydown', revealChrome);
+
+  document.addEventListener('fullscreenchange', () => {
+    if (document.fullscreenElement) {
+      fullscreenBtn.textContent = 'Exit Fullscreen';
+      revealChrome();
+    } else {
+      fullscreenBtn.textContent = 'Fullscreen';
+      clearTimeout(hideTimer);
+      document.body.classList.remove('chrome-hidden');
+    }
+  });
+
+  fullscreenBtn.addEventListener('click', () => {
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen().catch(() => {});
+    } else {
+      document.exitFullscreen();
+    }
+  });
+
+  // iOS (iPhone/iPad) doesn't reliably support page-level fullscreen — on
+  // some iOS versions the API reports itself as "available" but actually
+  // calling it on a page like this one freezes the video. Rather than trust
+  // that self-reported support, detect iOS directly and hide the button
+  // there unconditionally. The real fullscreen equivalent on iOS is opening
+  // this page from a Home Screen icon (Share → Add to Home Screen), which
+  // hides Safari's own chrome automatically and works reliably.
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1); // iPadOS often reports as Mac
+  const supportsPageFullscreen = !isIOS && document.fullscreenEnabled &&
+    typeof document.documentElement.requestFullscreen === 'function';
+  if (!supportsPageFullscreen) {
+    fullscreenBtn.style.display = 'none';
+  }
+
+  muteBtn.addEventListener('click', () => {
+    if (!localStream) return;
+    const track = localStream.getAudioTracks()[0];
+    if (!track) return;
+    track.enabled = !track.enabled;
+    muteBtn.textContent = track.enabled ? 'Mute' : 'Unmute';
+    muteBtn.classList.toggle('active-off', !track.enabled);
+  });
+
+  camBtn.addEventListener('click', () => {
+    if (!localStream) return;
+    const track = localStream.getVideoTracks()[0];
+    if (!track) return;
+    track.enabled = !track.enabled;
+    camBtn.textContent = track.enabled ? 'Camera on' : 'Camera off';
+    camBtn.classList.toggle('active-off', !track.enabled);
+  });
+
+  localVideo.addEventListener('click', () => {
+    localVideo.classList.toggle('minimized');
+  });
+
+  function applyRemoteTransform() {
+    remoteVideo.style.transform = `translate(${remotePanX}px, ${remotePanY}px) scale(${remoteZoom})`;
+  }
+
+  function clampRemotePan() {
+    const maxOffset = (remoteZoom - 1) * 250;
+    remotePanX = Math.max(-maxOffset, Math.min(maxOffset, remotePanX));
+    remotePanY = Math.max(-maxOffset, Math.min(maxOffset, remotePanY));
+  }
+
+  function resetRemoteZoom() {
+    remoteZoom = 1;
+    remotePanX = 0;
+    remotePanY = 0;
+    applyRemoteTransform();
+  }
+
+  remoteVideo.addEventListener('touchstart', (e) => {
+    if (e.touches.length === 2) {
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      pinchStartDist = Math.hypot(dx, dy);
+      pinchStartZoom = remoteZoom;
+      panActive = false;
+    } else if (e.touches.length === 1) {
+      const t = e.touches[0];
+      const now = Date.now();
+      const movedSinceLastTap = Math.hypot(t.clientX - lastTapX, t.clientY - lastTapY);
+
+      if (now - lastTapTime < 350 && movedSinceLastTap < 40) {
+        // Double tap: toggle between normal and a fixed zoomed-in level.
+        remoteZoom = remoteZoom > 1 ? 1 : DOUBLE_TAP_ZOOM;
+        remotePanX = 0;
+        remotePanY = 0;
+        applyRemoteTransform();
+        lastTapTime = 0;
+      } else {
+        lastTapTime = now;
+        lastTapX = t.clientX;
+        lastTapY = t.clientY;
+      }
+
+      if (remoteZoom > 1) {
+        panActive = true;
+        panStartX = t.clientX;
+        panStartY = t.clientY;
+        panOriginX = remotePanX;
+        panOriginY = remotePanY;
+      }
+    }
+  }, { passive: true });
+
+  remoteVideo.addEventListener('touchmove', (e) => {
+    if (e.touches.length === 2 && pinchStartDist > 0) {
+      e.preventDefault();
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      const dist = Math.hypot(dx, dy);
+      remoteZoom = Math.min(MAX_REMOTE_ZOOM, Math.max(1, pinchStartZoom * (dist / pinchStartDist)));
+      clampRemotePan();
+      applyRemoteTransform();
+    } else if (e.touches.length === 1 && panActive && remoteZoom > 1) {
+      e.preventDefault();
+      const t = e.touches[0];
+      remotePanX = panOriginX + (t.clientX - panStartX);
+      remotePanY = panOriginY + (t.clientY - panStartY);
+      clampRemotePan();
+      applyRemoteTransform();
+    }
+  }, { passive: false });
+
+  remoteVideo.addEventListener('touchend', () => {
+    panActive = false;
+    pinchStartDist = 0;
+    if (remoteZoom < 1.05) resetRemoteZoom();
+  }, { passive: true });
+
+  // Also support double-click on desktop for the same zoom toggle.
+  remoteVideo.addEventListener('dblclick', () => {
+    remoteZoom = remoteZoom > 1 ? 1 : DOUBLE_TAP_ZOOM;
+    remotePanX = 0;
+    remotePanY = 0;
+    applyRemoteTransform();
+  });
+
+  window.addEventListener('orientationchange', resetRemoteZoom);
+
+  cameraSelect.addEventListener('change', () => {
+    localStorage.setItem(LS_CAMERA, cameraSelect.value);
+    if (localStream) startLocalStream();
+    sendCameraList(); // CAMERA REMOTE SWITCH MODULE: tell the other side which camera is now active
+  });
+  micSelect.addEventListener('change', () => {
+    localStorage.setItem(LS_MIC, micSelect.value);
+    if (localStream) startLocalStream();
+  });
+
+  // ===== CAMERA NAMING MODULE: JS START =================================
+  // Assigns a persistent custom name (stored in localStorage, keyed by the
+  // browser's internal deviceId — stable across reloads as long as the
+  // camera stays in the same USB port) to whichever camera is selected.
+  // This solves the problem of two identical-model cameras (e.g. two
+  // EMEET PIXYs) reporting the exact same generic label, by letting you
+  // tell them apart yourself instead of relying on the OS-reported name.
+  //
+  // Design goal: only touches dropdown *display text* and a localStorage
+  // map — never touches which camera is actually selected/streamed, so it
+  // can't affect call behavior. To remove: delete this block, the two
+  // "CAMERA NAMING MODULE" lines inside listDevices() above, and the
+  // matching HTML/CSS blocks.
+  const LS_CAMERA_NAMES = 'trainingCall:cameraNames';
+  const nameCameraBtn = document.getElementById('nameCameraBtn');
+  const cameraNamePanel = document.getElementById('cameraNamePanel');
+  const cameraNamePanelLabel = document.getElementById('cameraNamePanelLabel');
+  const cameraNameCustomBtn = document.getElementById('cameraNameCustomBtn');
+  const cameraNameClearBtn = document.getElementById('cameraNameClearBtn');
+  const cameraNameCancelBtn = document.getElementById('cameraNameCancelBtn');
+  let rawCameraLabels = {}; // deviceId -> original OS-reported label, refreshed by listDevices()
+
+  function loadCameraNames() {
+    try { return JSON.parse(localStorage.getItem(LS_CAMERA_NAMES) || '{}'); }
+    catch { return {}; }
+  }
+  function saveCameraNames(map) {
+    localStorage.setItem(LS_CAMERA_NAMES, JSON.stringify(map));
+  }
+  function relabelCameraOptions() {
+    const names = loadCameraNames();
+    [...cameraSelect.options].forEach((opt, i) => {
+      const raw = rawCameraLabels[opt.value] || opt.textContent;
+      // ORDER-KEYED: prefer the position-derived Door/Rack role in forced mode.
+      const role = (AF_ROLE_BY_INDEX && AF_ROLE_BY_INDEX[i]) ? AF_ROLE_BY_INDEX[i].role : null;
+      const label = role || names[opt.value] || null;
+      opt.textContent = label ? `${label} (${raw})` : raw;
+    });
+  }
+  function setCameraName(name) {
+    if (!cameraSelect.value) return;
+    const names = loadCameraNames();
+    if (name) names[cameraSelect.value] = name;
+    else delete names[cameraSelect.value];
+    saveCameraNames(names);
+    relabelCameraOptions();
+  }
+  nameCameraBtn.addEventListener('click', () => {
+    const raw = rawCameraLabels[cameraSelect.value] || 'this camera';
+    cameraNamePanelLabel.textContent = `Naming the camera currently selected above (${raw})`;
+    cameraNamePanel.hidden = !cameraNamePanel.hidden;
+  });
+  document.querySelectorAll('.cam-name-preset').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      setCameraName(btn.dataset.name);
+      cameraNamePanel.hidden = true;
+    });
+  });
+  cameraNameCustomBtn.addEventListener('click', () => {
+    const name = prompt('Custom name for this camera:', '');
+    if (name && name.trim()) setCameraName(name.trim().slice(0, 24));
+    cameraNamePanel.hidden = true;
+  });
+  cameraNameClearBtn.addEventListener('click', () => {
+    setCameraName(null);
+    cameraNamePanel.hidden = true;
+  });
+  cameraNameCancelBtn.addEventListener('click', () => {
+    cameraNamePanel.hidden = true;
+  });
+  // ===== CAMERA NAMING MODULE: JS END =====================================
+
+  // ===== CAMERA REMOTE SWITCH MODULE: JS START ============================
+  // Lets either side put buttons on screen for the OTHER side's cameras,
+  // and switch that side's active camera remotely (e.g. Maria taps a
+  // button on her phone, and the gym PC switches which camera it's
+  // sending — no need for whoever's on camera to touch the dropdown).
+  //
+  // How it works: a small WebRTC data channel ("control") rides alongside
+  // the existing video/audio connection. Each side sends its own camera
+  // list (deviceId + friendly label + which one is currently active)
+  // whenever that list changes; each side renders the OTHER side's list
+  // as buttons. Tapping a button sends back a "switch to this deviceId"
+  // request, which the receiving side applies using the exact same
+  // startLocalStream() path the dropdown already uses.
+  //
+  // Design goal: only touches the control channel and the overlay's own
+  // buttons — never reaches into pc's video/audio senders directly, and
+  // never changes what happens when using the dropdown locally. To
+  // remove: delete this block, the "CAMERA REMOTE SWITCH MODULE" hook
+  // lines in createPeerConnection(), teardownPeerConnection(),
+  // listDevices(), and the cameraSelect 'change' handler above, plus the
+  // matching HTML/CSS blocks.
+  const camSwitchOverlay = document.getElementById('camSwitchOverlay');
+
+  function setupControlChannel() {
+    controlChannel.onopen = () => sendCameraList();
+    controlChannel.onclose = () => {
+      camSwitchOverlay.hidden = true;
+      camSwitchOverlay.innerHTML = '';
+    };
+    controlChannel.onmessage = (event) => {
+      let msg;
+      try { msg = JSON.parse(event.data); } catch (e) { return; }
+      if (msg.type === 'camera-list') {
+        renderRemoteCameraButtons(msg.cameras || []);
+      } else if (msg.type === 'switch-camera') {
+        console.log('[cam-switch] RECEIVED switch-camera deviceId=' + msg.deviceId + ' at ' + new Date().toISOString());
+        const opt = [...cameraSelect.options].find((o) => o.value === msg.deviceId);
+        if (!opt) return; // camera no longer present on this side — ignore
+        cameraSelect.value = msg.deviceId;
+        localStorage.setItem(LS_CAMERA, msg.deviceId);
+        if (localStream) startLocalStream().then(sendCameraList);
+      } else if (msg.type === 'trainer-log-batch') {
+        // TELEMETRY MODULE: gym-side arrival of a batch of trainer log lines.
+        // Purely additive leaf -- camera-list/switch-camera above untouched.
+        (msg.lines || []).forEach((line) => afdiagIngestRemote(line));
+      }
+    };
+  }
+
+  function sendCameraList() {
+    if (!controlChannel || controlChannel.readyState !== 'open') return;
+    const names = loadCameraNames(); // CAMERA NAMING MODULE: custom names, keyed by deviceId
+    const cameras = [...cameraSelect.options].map((opt, i) => ({
+      deviceId: opt.value,
+      // ORDER-KEYED NAMES: in forced mode the remap launcher pins door=index0,
+      // rack=index1, so enumeration position gives a stable, correct Door/Rack
+      // label with no deviceId dependence. Falls back to a custom name, then the
+      // raw OS-reported label (identical "EMEET PIXY" on both, which is why the
+      // old label was useless as a discriminator).
+      label: (AF_ROLE_BY_INDEX && AF_ROLE_BY_INDEX[i] ? AF_ROLE_BY_INDEX[i].role : null)
+        || names[opt.value] || rawCameraLabels[opt.value] || opt.textContent,
+      active: opt.value === cameraSelect.value
+    }));
+    controlChannel.send(JSON.stringify({ type: 'camera-list', cameras }));
+  }
+
+  function renderRemoteCameraButtons(cameras) {
+    camSwitchOverlay.innerHTML = '';
+    if (cameras.length < 2) {
+      // Nothing to switch to — one camera or none reported.
+      camSwitchOverlay.hidden = true;
+      return;
+    }
+    cameras.forEach((cam) => {
+      const btn = document.createElement('button');
+      btn.textContent = cam.label;
+      if (cam.active) btn.classList.add('cam-switch-active');
+      btn.addEventListener('click', () => {
+        console.log('[cam-switch] SEND switch-camera deviceId=' + cam.deviceId + ' at ' + new Date().toISOString());
+        if (controlChannel && controlChannel.readyState === 'open') {
+          controlChannel.send(JSON.stringify({ type: 'switch-camera', deviceId: cam.deviceId }));
+        }
+      });
+      camSwitchOverlay.appendChild(btn);
+    });
+    camSwitchOverlay.hidden = false;
+  }
+  // ===== CAMERA REMOTE SWITCH MODULE: JS END ==============================
+
+  // ===== DIAGNOSTICS MODULE START =====================================
+  // Adds: (1) a live connection-stats feed + per-session history log,
+  // written to localStorage only — never shown on this page; (2) an
+  // automatic bitrate cap that backs off when the call is routed through
+  // the TURN relay; (3) a manual "Low Bandwidth" toggle.
+  //
+  // Design goals: never touch the call's own variables or functions
+  // (pc, localStream, startLocalStream, createPeerConnection, etc.) —
+  // this block only *observes* them — so a bug here can't break calling,
+  // and the whole module can be deleted by removing this block plus the
+  // matching CSS/HTML blocks marked above, plus deleting public/diagnostics.html.
+  // Reports are viewed separately, on /diagnostics.html — nothing here
+  // changes what either side sees on the call screen itself.
+  const DIAG_LS_LIVE = 'trainingCall:diag:liveStats';
+  const DIAG_LS_LOG = 'trainingCall:diag:sessionLog';
+  const DIAG_LS_LOWBW = 'trainingCall:diag:lowBandwidth';
+  const DIAG_MAX_LOG_ENTRIES = 50;
+  const DIAG_POLL_MS = 3000;
+  const DIAG_BITRATE_FULL = 2500000;  // ~2.5 Mbps cap, matches the 1080p target
+  const DIAG_BITRATE_RELAY = 900000;  // auto cap when routed via TURN relay
+  const DIAG_BITRATE_LOW = 350000;    // manual "Low Bandwidth" cap
+
+  const bandwidthBtn = document.getElementById('bandwidthBtn');
+
+  let lowBandwidthMode = localStorage.getItem(DIAG_LS_LOWBW) === '1';
+  let diagLastPc = null;
+  let diagPollTimer = null;
+  let diagSessionStart = null;
+  let diagBitrateSamples = [];
+  let diagReconnectCount = 0;
+  let diagCandidateType = null;
+  let diagPrevBytes = { sent: 0, received: 0, audioSent: 0, audioReceived: 0, time: 0 };
+
+  function diagSetButtonLabel() {
+    if (!bandwidthBtn) return;
+    bandwidthBtn.textContent = 'Low Bandwidth: ' + (lowBandwidthMode ? 'On' : 'Off');
+    bandwidthBtn.classList.toggle('active-off', lowBandwidthMode);
+  }
+  diagSetButtonLabel();
+
+  async function diagApplyBitrateCap(kbpsCap) {
+    if (!pc) return;
+    try {
+      const sender = pc.getSenders().find((s) => s.track && s.track.kind === 'video');
+      if (!sender) return;
+      const params = sender.getParameters();
+      if (!params.encodings || !params.encodings.length) params.encodings = [{}];
+      params.encodings[0].maxBitrate = kbpsCap;
+      await sender.setParameters(params);
+    } catch (e) { /* never let a diagnostics failure affect the call */ }
+  }
+
+  async function diagApplyBandwidthMode() {
+    if (lowBandwidthMode) {
+      await diagApplyBitrateCap(DIAG_BITRATE_LOW);
+      const track = localStream && localStream.getVideoTracks()[0];
+      if (track) {
+        try {
+          await track.applyConstraints({ width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 20 } });
+        } catch (e) {}
+      }
+    } else {
+      // Hand back to the automatic cap (full quality, or relay-reduced —
+      // diagPollStats will reassert the right one on its next tick).
+      await diagApplyBitrateCap(DIAG_BITRATE_FULL);
+      const track = localStream && localStream.getVideoTracks()[0];
+      if (track) {
+        try {
+          await track.applyConstraints({ width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } });
+        } catch (e) {}
+      }
+    }
+  }
+
+  if (bandwidthBtn) {
+    bandwidthBtn.addEventListener('click', () => {
+      lowBandwidthMode = !lowBandwidthMode;
+      localStorage.setItem(DIAG_LS_LOWBW, lowBandwidthMode ? '1' : '0');
+      diagSetButtonLabel();
+      diagApplyBandwidthMode();
+    });
+  }
+
+  function diagFinalizeSession() {
+    if (!diagSessionStart || diagBitrateSamples.length === 0) {
+      diagSessionStart = null;
+      diagBitrateSamples = [];
+      diagReconnectCount = 0;
+      diagCandidateType = null;
+      localStorage.removeItem(DIAG_LS_LIVE);
+      return;
+    }
+    const endedAt = Date.now();
+    const avgUp = Math.round(diagBitrateSamples.reduce((a, s) => a + s.up, 0) / diagBitrateSamples.length);
+    const avgDown = Math.round(diagBitrateSamples.reduce((a, s) => a + s.down, 0) / diagBitrateSamples.length);
+    const audioUpSamples = diagBitrateSamples.filter((s) => s.audioUp != null);
+    const audioDownSamples = diagBitrateSamples.filter((s) => s.audioDown != null);
+    const avgAudioUp = audioUpSamples.length ? Math.round(audioUpSamples.reduce((a, s) => a + s.audioUp, 0) / audioUpSamples.length) : null;
+    const avgAudioDown = audioDownSamples.length ? Math.round(audioDownSamples.reduce((a, s) => a + s.audioDown, 0) / audioDownSamples.length) : null;
+    // Loss is a cumulative running total, so the last sample already reflects the whole session.
+    const lossSamples = diagBitrateSamples.filter((s) => s.audioLossPct != null);
+    const finalAudioLossPct = lossSamples.length ? lossSamples[lossSamples.length - 1].audioLossPct : null;
+    const entry = {
+      startedAt: diagSessionStart,
+      endedAt,
+      durationSec: Math.round((endedAt - diagSessionStart) / 1000),
+      avgBitrateUpKbps: avgUp,
+      avgBitrateDownKbps: avgDown,
+      avgAudioBitrateUpKbps: avgAudioUp,
+      avgAudioBitrateDownKbps: avgAudioDown,
+      audioPacketLossPct: finalAudioLossPct,
+      reconnectCount: diagReconnectCount,
+      candidateType: diagCandidateType,
+      bandwidthMode: lowBandwidthMode ? 'low' : 'auto'
+    };
+    try {
+      const log = JSON.parse(localStorage.getItem(DIAG_LS_LOG) || '[]');
+      log.push(entry);
+      while (log.length > DIAG_MAX_LOG_ENTRIES) log.shift();
+      localStorage.setItem(DIAG_LS_LOG, JSON.stringify(log));
+    } catch (e) {}
+    diagSessionStart = null;
+    diagBitrateSamples = [];
+    diagReconnectCount = 0;
+    diagCandidateType = null;
+    localStorage.removeItem(DIAG_LS_LIVE);
+  }
+
+  async function diagPollStats(pcRef) {
+    if (!pcRef) return;
+    try {
+      const stats = await pcRef.getStats();
+      let bytesSent = null, bytesReceived = null, pairLocalCandId = null;
+      let audioBytesSent = null, audioBytesReceived = null, audioPacketsLost = null, audioPacketsReceived = null;
+      stats.forEach((report) => {
+        if (report.type === 'outbound-rtp' && report.kind === 'video') bytesSent = report.bytesSent;
+        if (report.type === 'inbound-rtp' && report.kind === 'video') bytesReceived = report.bytesReceived;
+        if (report.type === 'outbound-rtp' && report.kind === 'audio') audioBytesSent = report.bytesSent;
+        if (report.type === 'inbound-rtp' && report.kind === 'audio') {
+          audioBytesReceived = report.bytesReceived;
+          audioPacketsLost = report.packetsLost;
+          audioPacketsReceived = report.packetsReceived;
+        }
+        if (report.type === 'candidate-pair' && report.state === 'succeeded' && (report.nominated || report.selected)) {
+          pairLocalCandId = report.localCandidateId;
+        }
+      });
+      let candidateType = diagCandidateType;
+      if (pairLocalCandId) {
+        const localCand = stats.get(pairLocalCandId);
+        if (localCand && localCand.candidateType) candidateType = localCand.candidateType; // host/srflx/relay/prflx
+      }
+
+      const now = performance.now();
+      let kbpsUp = null, kbpsDown = null, audioKbpsUp = null, audioKbpsDown = null;
+      const dt = diagPrevBytes.time ? (now - diagPrevBytes.time) / 1000 : 0;
+      if (dt > 0 && bytesSent != null) kbpsUp = Math.max(0, Math.round(((bytesSent - diagPrevBytes.sent) * 8) / dt / 1000));
+      if (dt > 0 && bytesReceived != null) kbpsDown = Math.max(0, Math.round(((bytesReceived - diagPrevBytes.received) * 8) / dt / 1000));
+      if (dt > 0 && audioBytesSent != null) audioKbpsUp = Math.max(0, Math.round(((audioBytesSent - diagPrevBytes.audioSent) * 8) / dt / 1000));
+      if (dt > 0 && audioBytesReceived != null) audioKbpsDown = Math.max(0, Math.round(((audioBytesReceived - diagPrevBytes.audioReceived) * 8) / dt / 1000));
+      const audioLossPct = (audioPacketsLost != null && audioPacketsReceived != null && (audioPacketsLost + audioPacketsReceived) > 0)
+        ? Math.round((audioPacketsLost / (audioPacketsLost + audioPacketsReceived)) * 1000) / 10
+        : null;
+      diagPrevBytes = {
+        sent: bytesSent || 0, received: bytesReceived || 0,
+        audioSent: audioBytesSent || 0, audioReceived: audioBytesReceived || 0,
+        time: now
+      };
+
+      if (kbpsUp != null && kbpsDown != null) {
+        diagBitrateSamples.push({ up: kbpsUp, down: kbpsDown, audioUp: audioKbpsUp, audioDown: audioKbpsDown, audioLossPct });
+        if (diagBitrateSamples.length > 400) diagBitrateSamples.shift();
+      }
+
+      if (candidateType && candidateType !== diagCandidateType) {
+        diagCandidateType = candidateType;
+        if (!lowBandwidthMode) {
+          diagApplyBitrateCap(candidateType === 'relay' ? DIAG_BITRATE_RELAY : DIAG_BITRATE_FULL);
+        }
+      }
+
+      const vSender = pcRef.getSenders().find((s) => s.track && s.track.kind === 'video');
+      const vReceiver = pcRef.getReceivers().find((r) => r.track && r.track.kind === 'video');
+      const sentSettings = (vSender && vSender.track) ? vSender.track.getSettings() : {};
+      const recvSettings = (vReceiver && vReceiver.track) ? vReceiver.track.getSettings() : {};
+
+      localStorage.setItem(DIAG_LS_LIVE, JSON.stringify({
+        timestamp: Date.now(),
+        connectionState: pcRef.connectionState,
+        candidateType: diagCandidateType,
+        bitrateUpKbps: kbpsUp,
+        bitrateDownKbps: kbpsDown,
+        audioBitrateUpKbps: audioKbpsUp,
+        audioBitrateDownKbps: audioKbpsDown,
+        audioPacketLossPct: audioLossPct,
+        resolutionSent: sentSettings.width ? (sentSettings.width + 'x' + sentSettings.height) : null,
+        resolutionReceived: recvSettings.width ? (recvSettings.width + 'x' + recvSettings.height) : null,
+        reconnectCount: diagReconnectCount,
+        bandwidthMode: lowBandwidthMode ? 'low' : 'auto'
+      }));
+    } catch (e) { /* never let a diagnostics failure affect the call */ }
+  }
+
+  function diagAttachToPc(pcRef) {
+    if (!diagSessionStart) diagSessionStart = Date.now();
+    diagPrevBytes = { sent: 0, received: 0, time: performance.now() };
+    if (lowBandwidthMode) diagApplyBandwidthMode();
+    const diagHandleStateChange = () => {
+      if (pcRef.connectionState === 'disconnected' || pcRef.connectionState === 'failed') {
+        diagReconnectCount++;
+      }
+      if (pcRef.connectionState === 'connected' && !diagPollTimer) {
+        diagPollTimer = setInterval(() => diagPollStats(pcRef), DIAG_POLL_MS);
+      }
+    };
+    pcRef.addEventListener('connectionstatechange', diagHandleStateChange);
+    // Covers the case where the call already reached "connected" in the
+    // moment between pc being created and this watcher noticing it (the
+    // watcher only checks once per second) — without this, a fast-connecting
+    // call (e.g. two tabs on the same network) could skip logging entirely.
+    diagHandleStateChange();
+  }
+
+  // Rather than touch createPeerConnection()/teardownPeerConnection(), this
+  // just watches the existing `pc` variable from the outside and reacts
+  // when it appears or disappears.
+  setInterval(() => {
+    if (pc && pc !== diagLastPc) {
+      diagLastPc = pc;
+      diagAttachToPc(pc);
+    } else if (!pc && diagLastPc) {
+      diagLastPc = null;
+      if (diagPollTimer) { clearInterval(diagPollTimer); diagPollTimer = null; }
+      diagFinalizeSession();
+    }
+  }, 1000);
+  // ===== DIAGNOSTICS MODULE END =======================================
+
+  // ===== SELF-VIEW POPOUT MODULE ========================================
+  // Opens your own camera feed in a separate browser window so you can see
+  // yourself the way Maria does — large, and unmirrored (the small preview
+  // on video#local is flipped via CSS for comfort, but the real feed sent
+  // over WebRTC, and the one shown in this popped-out window, is not; the
+  // popout has no stylesheet of its own so no flip is ever applied).
+  //
+  // Opens as a plain window near the main screen; drag/resize it onto the
+  // second monitor manually. No automatic screen-placement logic — kept
+  // deliberately simple.
+  //
+  // Delete this whole block plus the matching HTML block in the footer to
+  // remove the feature entirely; nothing else in the app depends on it.
+  const popoutBtn = document.getElementById('popoutBtn');
+  let popoutWindow = null;
+  let popoutVideoEl = null;
+
+  function popoutUpdateStream() {
+    if (!popoutVideoEl) return;
+    try { popoutVideoEl.srcObject = localStream; } catch (e) {}
+  }
+
+  // PIP-TEST BUILD: Document Picture-in-Picture first (Design B), window.open fallback.
+  // Detection loop reads on-page #local; we do NOT move it. A separate lightweight
+  // <video> goes into the PiP surface on the same localStream, so detection is
+  // untouched; the only variable under test is PiP surface vs window.open decode.
+  function pipSetBadge(text, ok) {
+    let b = document.getElementById('pipPathBadge');
+    if (!b) {
+      b = document.createElement('div');
+      b.id = 'pipPathBadge';
+      b.style.cssText = 'position:fixed;left:10px;bottom:10px;z-index:100000;' +
+        'font:12px/1.4 monospace;padding:5px 9px;border-radius:6px;' +
+        'background:#111;border:1px solid #333;color:#fff;pointer-events:none;';
+      document.body.appendChild(b);
+    }
+    b.textContent = 'popout path: ' + text;
+    b.style.borderColor = ok ? '#2e9e5b' : '#a55';
+    b.style.color = ok ? '#dff5e7' : '#f4d0d0';
+  }
+
+  function pipBuildVideoIn(doc) {
+    doc.title = 'My View';
+    const style = doc.createElement('style');
+    style.textContent = 'html,body{margin:0;padding:0;height:100%;background:#000;}' +
+      'video{width:100%;height:100%;object-fit:contain;background:#000;display:block;}';
+    doc.head.appendChild(style);
+    const video = doc.createElement('video');
+    video.id = 'popoutVideo';
+    video.autoplay = true;
+    video.playsInline = true;
+    video.muted = true;
+    doc.body.appendChild(video);
+    popoutVideoEl = video;
+    popoutUpdateStream();
+  }
+
+  async function openSelfViewPopout() {
+    if (popoutWindow && !popoutWindow.closed) {
+      popoutWindow.focus();
+      return;
+    }
+    if (window.documentPictureInPicture && documentPictureInPicture.window) {
+      try { documentPictureInPicture.window.focus(); } catch (e) {}
+      return;
+    }
+
+    if ('documentPictureInPicture' in window) {
+      try {
+        const pipWin = await documentPictureInPicture.requestWindow({
+          width: 800, height: 600
+        });
+        pipBuildVideoIn(pipWin.document);
+        pipWin.addEventListener('pagehide', () => { popoutVideoEl = null; });
+        pipSetBadge('documentPictureInPicture', true);
+        return;
+      } catch (e) {
+        pipSetBadge('DPiP failed -> window.open (' + (e && e.name || 'err') + ')', false);
+      }
+    }
+
+    popoutWindow = window.open('', 'selfViewPopout', 'width=800,height=600');
+    if (!popoutWindow) { pipSetBadge('popup blocked', false); return; }
+    pipBuildVideoIn(popoutWindow.document);
+    const bd = document.getElementById('pipPathBadge');
+    if (!bd || bd.textContent.indexOf('DPiP failed') === -1) {
+      pipSetBadge('window.open (legacy)', false);
+    }
+  }
+
+  if (popoutBtn) {
+    popoutBtn.addEventListener('click', () => { openSelfViewPopout(); });
+  }
+  // ===== SELF-VIEW POPOUT MODULE END =====================================
+
+  // ===== AUTO-FRAME MODULE: JS START =====================================
+  // Host-driven auto-framing, ported from the v13 bench
+  // (~/training-call/autoframe-test/index.html, 40852 bytes).
+  //
+  // Everything in this module is self-contained: it injects its own CSS and its
+  // own panel into document.body, and touches NO live-app markup. Deleting from
+  // the START banner to the END banner returns this file to the live app plus
+  // the three inline edits noted at the top of <head>.
+  //
+  // It does not hook startLocalStream(). Instead it OBSERVES localVideo.srcObject
+  // every animation frame and adopts whatever video track is currently live. That
+  // means camera switching keeps working exactly as it does in the live app
+  // (replaceTrack, call stays up) and this module simply follows along — no
+  // teardown, no dropped video for the trainer.
+  //
+  // Two deliberate changes from the bench, both deliberate, both explained below:
+  //   1. restoreInv() runs BEFORE the controls go live (the v13 ordering defect).
+  //   2. Detection reads a downscaled offscreen canvas, not the 1080p element.
+
+  const AF_LS_TUNE = 'afTune_v14';
+  const AF_LS_INV  = 'afInv_v14';
+  const AF_U = 3600;        // motor units per degree
+  const AF_MIN_CMD = 900;
+  const AF_VIS_MIN = 0.5;   // 0.25° — below this a command isn't worth a round trip
+  const AF_TORSO = [11, 12, 23, 24];
+  // ---- AFFIX: solid-lock, tilt-down cap, and HOME constants --------------
+  const AF_LOCK_N = 3;              // consecutive good-visibility frames required for a "solid lock"
+  const AF_TILT_MAX_DOWN = 70;      // ° — soft cap on top of the camera's own hardware limit (both cameras). Door: positive tilt = down.
+  const AF_LS_HOME = 'afHome_v1';   // per-deviceId saved home, same pattern as AF_LS_INV
+  const AF_HOME_TILT_DEFAULT = 30;  // ° down — DOOR-ONLY built-in default (door: positive tilt = down)
+  const AF_HOME_PAN_DEFAULT = 0;    // ° — DOOR-ONLY built-in default
+  const AF_HOME_TILT_RACK_DEFAULT = 32;  // ° — RACK-ONLY built-in default
+  const AF_HOME_PAN_RACK_DEFAULT = -17;  // ° — RACK-ONLY built-in default
+  // Door and rack each get a built-in default; unrecognised/unforced cameras
+  // fall back to literal 0/0, set inside afLoadHome() below.
+
+  // v13 validated defaults, carried forward verbatim from the bench.
+  const AF_DEFAULTS = {
+    torso: 0.42, vDead: 0.06, hDead: 0.06, stepT: 6, stepP: 12,
+    tGain: 120000, pGain: 200000, rate: 300, smooth: 0.35, reacq: 3,
+    detHz: 6, panOn: true, invT: true, invP: true
+  };
+
+  let afPose = null, afPoseReady = false, afPoseError = null;
+  let afTrack = null, afCaps = null, afOpenDeviceId = null;
+  let afFraming = false;
+  let afLastVideoTime = -1, afLastDetect = 0, afLastCmd = 0;
+  let afCmdInFlight = false, afPumpAlt = 0;
+  let afWant = { tilt: null, pan: null };
+  let afCurTilt = 0, afCurPan = 0;
+  let afSmX = null, afSmY = null;
+  // AFFIX: solid-lock + HOME state, replacing the old afLostSince/afRecentred pair.
+  let afSolidCount = 0, afLocked = false, afLastLockedAt = 0, afHomed = false, afHadLms = false;
+  let afHomeTilt = 0, afHomePan = 0; // resolved per-camera by afLoadHome() -- 0/0 until then
+  let afPanelOpen = false;
+  let afLastResult = null;
+
+  const afT = Object.assign({}, AF_DEFAULTS);
+  const afM = {
+    frames: 0, fpsWin: 0, fpsAt: 0, vidFps: null,
+    detN: 0, detSum: 0, detMax: 0, detMean: null,
+    sup: { tilt: 0, pan: 0 }, clamp: { tilt: 0, pan: 0 },
+    peakT: 0, peakP: 0, errs: 0, lost: 0,
+    vis: null
+  };
+
+  // ===== AF DIAGNOSTIC LOGGER: JS START ===================================
+  // Persistent, LOG-ONLY diagnostic logger for the door-camera "tilts down
+  // and stays down" / "disappears from switcher" investigation. Read-only
+  // with respect to the app: it never changes what auto-framing, PTZ, or the
+  // camera switcher do -- it only observes and records. Every write is
+  // wrapped in try/catch so a logging failure (including a localStorage
+  // quota error) can never affect the call. NOT cleared on page load --
+  // survives reloads and launcher relaunches, since the incident is usually
+  // followed by one; only the Clear button below empties it. Writes are
+  // batched (flushed on a 1s timer) so a busy period never means a
+  // JSON.stringify of the whole buffer on every call.
+  const AFDIAG_LS_LOG = 'afDiag:log_v1';
+  const AFDIAG_MAX_LINES = 5000;   // ring buffer cap -- oldest lines drop first
+  const AFDIAG_FLUSH_MS = 1000;    // batched writes -- never stringify per line
+  let afdiagBuf = [];              // lines already persisted this load
+  let afdiagPending = [];          // lines written since the last flush
+  let afdiagLastSummarySig = null;
+  let afdiagLastHeartbeatAt = 0;    // AFFIX: wall-clock ms of the last summary/heartbeat line
+
+  function afdiagRoleLabel() {
+    try {
+      if (!afOpenDeviceId) return '—';
+      if (!AF_FORCE_MODE) return 'unforced';
+      const hit = afRoleFor(afOpenDeviceId);
+      return hit ? hit.role.toLowerCase() : 'unrecognised';
+    } catch (e) { return '?'; }
+  }
+
+  function afdiagLoad() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(AFDIAG_LS_LOG) || '[]');
+      afdiagBuf = Array.isArray(raw) ? raw : [];
+    } catch (e) { afdiagBuf = []; }
+  }
+
+  function afdiagFlush() {
+    try {
+      if (!afdiagPending.length) return;
+      afdiagBuf = afdiagBuf.concat(afdiagPending);
+      afdiagPending = [];
+      if (afdiagBuf.length > AFDIAG_MAX_LINES) {
+        afdiagBuf = afdiagBuf.slice(afdiagBuf.length - AFDIAG_MAX_LINES);
+      }
+      localStorage.setItem(AFDIAG_LS_LOG, JSON.stringify(afdiagBuf));
+    } catch (e) { /* quota or serialization failure -- never let logging break the app */ }
+  }
+
+  function afdiag(msg) {
+    try {
+      const line = new Date().toISOString() + ' [' + afdiagRoleLabel() + '] ' + msg;
+      afdiagPending.push(line);
+      // Guard against an unbounded burst piling up between flushes.
+      if (afdiagPending.length > AFDIAG_MAX_LINES) {
+        afdiagPending = afdiagPending.slice(afdiagPending.length - AFDIAG_MAX_LINES);
+      }
+      // ===== TELEMETRY MODULE: queue this line for the trainer -> gym log
+      // stream. Nested try/catch so a telemetry failure can never take down
+      // normal logging above -- this is the ONLY place telemetry code touches
+      // afdiag() itself. Trainer-only (telemIsTrainer()); the gym side never
+      // enqueues its own lines for sending.
+      try { if (telemIsTrainer()) telemEnqueue(line); } catch (e2) { /* telemetry must never affect logging */ }
+    } catch (e) { /* never let a logging failure affect the call */ }
+  }
+
+  // ===== TELEMETRY MODULE: trainer->gym log stream, heartbeat, sigprobe =====
+  // Client-only, additive. Never calls afdiag() from anywhere in this module
+  // except the one hook inside afdiag() itself above -- all of this module's
+  // own failures go to console only, so telemetry can never affect the call
+  // or the normal diagnostic log. To remove: delete this whole block, the one
+  // afdiag() hook above, the wsOpenedAt assignment in connectSignaling()'s
+  // onopen, the 'sigprobe' arm in mySocket.onmessage, and the
+  // 'trainer-log-batch' arm in setupControlChannel()'s onmessage.
+  // (TELEM_* state constants/lets now declared near telemIsTrainer, above.)
+
+  function telemLineTimestampMs(line) {
+    try {
+      const tok = String(line).split(' ', 1)[0];
+      const ms = Date.parse(tok);
+      return isNaN(ms) ? null : ms;
+    } catch (e) { return null; }
+  }
+
+  function telemLoadQueue() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(TELEM_LS_QUEUE) || '[]');
+      const arr = Array.isArray(raw) ? raw : [];
+      const cutoff = Date.now() - TELEM_STALE_MS;
+      telemQueue = arr.filter((line) => {
+        const ms = telemLineTimestampMs(line);
+        return ms === null || ms >= cutoff; // keep anything we can't parse, rather than guess
+      }).concat(telemQueue); // persisted lines first, then anything afdiag() already enqueued before this ran
+      if (telemQueue.length > TELEM_QUEUE_MAX) {
+        telemQueue = telemQueue.slice(telemQueue.length - TELEM_QUEUE_MAX); // keep the newest
+      }
+      telemQueueDirty = true;
+    } catch (e) { telemQueue = []; console.error('[telem] loadQueue failed', e); }
+  }
+
+  function telemEnqueue(line) {
+    telemQueue.push(line);
+    if (telemQueue.length > TELEM_QUEUE_MAX) {
+      telemQueue = telemQueue.slice(telemQueue.length - TELEM_QUEUE_MAX);
+    }
+    telemQueueDirty = true;
+  }
+
+  function telemMirrorQueue() {
+    try {
+      localStorage.setItem(TELEM_LS_QUEUE, JSON.stringify(telemQueue));
+    } catch (e) { console.error('[telem] mirrorQueue failed', e); }
+  }
+
+  // Gym-side ingest: writes straight into afdiagPending, bypassing afdiag()
+  // entirely (never re-enqueued for sending -- this is the only path that
+  // appends received lines to the local log).
+  function afdiagIngestRemote(text) {
+    try {
+      const gymLine = new Date().toISOString() + ' [trainer] ' + text;
+      afdiagPending.push(gymLine);
+      if (afdiagPending.length > AFDIAG_MAX_LINES) {
+        afdiagPending = afdiagPending.slice(afdiagPending.length - AFDIAG_MAX_LINES);
+      }
+    } catch (e) { console.error('[telem] ingest failed', e); }
+  }
+
+  function telemSendSigprobe() {
+    try {
+      if (!telemIsTrainer()) return;
+      if (ws && ws.readyState === 1) { // 1 = WebSocket.OPEN -- checked directly, never via send()
+        telemSigprobeSeq++;
+        ws.send(JSON.stringify({ type: 'sigprobe', seq: telemSigprobeSeq }));
+      }
+      // else: ws closed/absent -- do nothing. No afdiag(), no reconnect trigger.
+    } catch (e) { console.error('[telem] sigprobe tick failed', e); }
+  }
+
+  function telemHeartbeatTick() {
+    try {
+      if (!telemIsTrainer()) return;
+      const now = Date.now();
+      const dt = telemHbLastAt ? (now - telemHbLastAt) : 0;
+      telemHbLastAt = now;
+      telemHbSeq++;
+      const wsAge = wsOpenedAt ? (now - wsOpenedAt) : 0;
+      afdiag('TELEM-HB seq=' + telemHbSeq + ' dt=' + dt + 'ms' +
+        ' vis=' + document.visibilityState +
+        ' online=' + navigator.onLine +
+        ' ws=' + (ws ? ws.readyState : 'null') +
+        ' wsAge=' + wsAge + 'ms' +
+        ' retry=' + signalRetryAttempt +
+        ' pc=' + (pc ? pc.connectionState : 'null') +
+        ' ice=' + (pc ? pc.iceConnectionState : 'null') +
+        ' rtt=' + (lastRtt === null ? 'na' : lastRtt + 'ms') +
+        ' pongAge=' + (lastPongAt ? (now - lastPongAt) + 'ms' : 'na'));
+    } catch (e) { console.error('[telem] heartbeat tick failed', e); }
+  }
+
+  function telemDrainTick() {
+    try {
+      // Role latch: once true, never reverts (see the declaration near AF_FORCE_MODE).
+      if (!telemIsGym && afCaps && afCaps.tilt) telemIsGym = true;
+
+      if (telemIsTrainer() && controlChannel && controlChannel.readyState === 'open' &&
+          controlChannel.bufferedAmount < TELEM_BUFFERED_AMOUNT_MAX && telemQueue.length) {
+        const chunk = [];
+        let bytes = 2; // '[]'
+        for (let i = 0; i < telemQueue.length && chunk.length < TELEM_CHUNK_MAX_LINES; i++) {
+          const line = telemQueue[i];
+          const lineBytes = JSON.stringify(line).length + 1;
+          if (chunk.length && bytes + lineBytes > TELEM_CHUNK_MAX_BYTES) break;
+          chunk.push(line);
+          bytes += lineBytes;
+        }
+        if (chunk.length) {
+          try {
+            controlChannel.send(JSON.stringify({ type: 'trainer-log-batch', lines: chunk }));
+            telemQueue = telemQueue.slice(chunk.length);
+            telemQueueDirty = true;
+          } catch (e) {
+            // Channel reported open but send() threw -- discard this chunk so one
+            // bad batch can never wedge the queue; do not retry it.
+            telemQueue = telemQueue.slice(chunk.length);
+            telemQueueDirty = true;
+            console.error('[telem] send failed, chunk discarded', e);
+          }
+        }
+      }
+
+      if (telemQueueDirty) {
+        telemMirrorQueue();
+        telemQueueDirty = false;
+      }
+    } catch (e) { console.error('[telem] drain tick failed', e); }
+  }
+
+  telemLoadQueue();
+  setInterval(telemDrainTick, 1000);
+  setInterval(telemHeartbeatTick, 30000);
+  setInterval(telemSendSigprobe, 30000);
+  try {
+    window.addEventListener('pagehide', () => {
+      try { if (telemQueueDirty) { telemMirrorQueue(); telemQueueDirty = false; } } catch (e) { console.error('[telem] pagehide mirror failed', e); }
+    });
+  } catch (e) {}
+  // ===== TELEMETRY MODULE END =================================================
+
+  // ===== PINGPONG MODULE: app-level signaling liveness =========================
+  // The server's protocol-level ws pings prove the socket to the SERVER, not to
+  // us -- a half-open socket can look OPEN here indefinitely. Every 20s send
+  // {type:'ping'}; the server answers {type:'pong'} to us only. If no pong for
+  // 40s, force a reconnect through scheduleReconnect() -- the same path
+  // mySocket.onclose uses. Both timers stand down while the tab is hidden
+  // (timers are throttled there and a stale gap would false-trigger); the
+  // baseline is reset when it comes back. The watchdog stays inert until the
+  // first pong ever arrives, so this page against a server WITHOUT ping/pong
+  // support behaves exactly like index-telemetry (no reconnect loop).
+  // To remove: delete this block, the PINGPONG lets near wsOpenedAt, the
+  // lastPongAt line in onopen, the 'pong' arm in onmessage, and the rtt/pongAge
+  // fields in TELEM-HB.
+  const PING_INTERVAL_MS = 20000;
+  const PONG_WATCHDOG_MS = 5000;
+  const PONG_TIMEOUT_MS = 40000;
+
+  function pingTick() {
+    try {
+      if (document.hidden) return;
+      if (ws && ws.readyState === 1) { // 1 = WebSocket.OPEN -- checked directly, never via send()
+        pingSeq++;
+        ws.send(JSON.stringify({ type: 'ping', seq: pingSeq, t: Date.now() }));
+      }
+    } catch (e) { console.error('[pingpong] ping tick failed', e); }
+  }
+
+  function pongWatchdogTick() {
+    try {
+      if (document.hidden) return;
+      if (!pongSeen || !inCall || replaced) return;
+      if (!ws || ws.readyState !== 1) return; // closed/connecting: the existing onclose/retry path owns it
+      const age = Date.now() - lastPongAt;
+      if (lastPongAt && age > PONG_TIMEOUT_MS) {
+        afdiag('PONG timeout — no pong for ' + age + 'ms (lastRtt=' + (lastRtt === null ? 'na' : lastRtt + 'ms') + ') — forcing reconnect');
+        lastPongAt = Date.now(); // one trigger per stall; onopen resets it again for the new socket
+        if (inCall && !replaced) setStatus('Signaling lost — retrying…', 'bad');
+        scheduleReconnect('pong-timeout');
+      }
+    } catch (e) { console.error('[pingpong] watchdog tick failed', e); }
+  }
+
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) lastPongAt = Date.now(); // reset the baseline -- hidden time is not a stall
+  });
+
+  // Check-with-a-ping-first, used when the tab comes back after > FORCE_RECONNECT_HIDDEN_MS.
+  // Pong within PONG_PROBE_MS: keep the socket, touch nothing. No pong, socket not
+  // open, or a server that has never ponged: the same forced reconnect as before.
+  // Exactly one PROBE line per decision, naming the path taken.
+  const PONG_PROBE_MS = 5000;
+
+  function verifyOrReconnect(hiddenFor) {
+    if (!inCall || replaced) return; // reconnectNow() would no-op here anyway
+    if (probe) return;               // a check is already in flight
+    if (!pongSeen || !ws || ws.readyState !== 1) {
+      afdiag('PROBE after hidden ' + hiddenFor + 'ms — path=reconnect (' +
+        (!pongSeen ? 'server has never ponged' : 'ws not open, state=' + (ws ? ws.readyState : 'null')) + ')');
+      reconnectNow('visibilitychange-forced', true);
+      return;
+    }
+    const seq = ++pingSeq;
+    probe = { seq: seq, socket: ws, hiddenFor: hiddenFor, timer: null };
+    try {
+      ws.send(JSON.stringify({ type: 'ping', seq: seq, t: Date.now() }));
+    } catch (e) {
+      probe = null;
+      afdiag('PROBE after hidden ' + hiddenFor + 'ms — path=reconnect (ping send failed)');
+      reconnectNow('visibilitychange-forced', true);
+      return;
+    }
+    probe.timer = setTimeout(() => {
+      const p = probe;
+      probe = null;
+      if (!p) return;
+      if (ws !== p.socket) {
+        afdiag('PROBE seq=' + p.seq + ' after hidden ' + p.hiddenFor + 'ms — path=none (socket already replaced)');
+        return;
+      }
+      afdiag('PROBE seq=' + p.seq + ' after hidden ' + p.hiddenFor + 'ms — path=reconnect (no pong in ' + PONG_PROBE_MS + 'ms)');
+      reconnectNow('visibilitychange-forced', true);
+    }, PONG_PROBE_MS);
+  }
+
+  // Called from the 'pong' arm, which only runs for the current socket.
+  function pongProbeAnswered(seq, rtt) {
+    if (!probe || seq !== probe.seq) return;
+    clearTimeout(probe.timer);
+    afdiag('PROBE seq=' + seq + ' after hidden ' + probe.hiddenFor + 'ms — path=kept (pong rtt=' +
+      (rtt === null ? 'na' : rtt + 'ms') + ', no reconnect)');
+    probe = null;
+  }
+  setInterval(pingTick, PING_INTERVAL_MS);
+  setInterval(pongWatchdogTick, PONG_WATCHDOG_MS);
+  // ===== PINGPONG MODULE END ==================================================
+
+  function afdiagTrackLabel(t) {
+    try {
+      if (!t) return '(no track)';
+      const st = t.getSettings ? t.getSettings() : {};
+      const id = (st.deviceId || t.id || '').slice(0, 8);
+      let role = 'unforced';
+      if (AF_FORCE_MODE) {
+        const hit = afRoleFor(st.deviceId);
+        role = hit ? hit.role.toLowerCase() : 'unrecognised';
+      }
+      return role + ' ' + id;
+    } catch (e) { return '?'; }
+  }
+
+  function afdiagAttachTrackListeners(t) {
+    if (!t) return;
+    try {
+      const label = afdiagTrackLabel(t);
+      const onEnded = () => afdiag('track ENDED (' + label + ')');
+      const onMute = () => afdiag('track MUTE (' + label + ')');
+      const onUnmute = () => afdiag('track UNMUTE (' + label + ')');
+      t.addEventListener('ended', onEnded);
+      t.addEventListener('mute', onMute);
+      t.addEventListener('unmute', onUnmute);
+      t.__afdiagListeners = { onEnded, onMute, onUnmute };
+    } catch (e) {}
+  }
+
+  function afdiagDetachTrackListeners(t) {
+    if (!t || !t.__afdiagListeners) return;
+    try {
+      t.removeEventListener('ended', t.__afdiagListeners.onEnded);
+      t.removeEventListener('mute', t.__afdiagListeners.onMute);
+      t.removeEventListener('unmute', t.__afdiagListeners.onUnmute);
+      delete t.__afdiagListeners;
+    } catch (e) {}
+  }
+
+  function afdiagSummaryTick() {
+    try {
+      const el = localVideo;
+      const nowWall = Date.now();
+      // AFFIX: signature is built from state that only changes at meaningful
+      // moments (lock, position, counters, video) -- no ticking elapsed-time
+      // field, so idle/unchanged periods produce nothing but the 30s heartbeat.
+      const sig = JSON.stringify({
+        framing: afFraming,
+        locked: afLocked,
+        unconfirmed: afInvUnconfirmed,
+        dev: afOpenDeviceId,
+        ready: el ? el.readyState : null,
+        vidW: el ? el.videoWidth : null,
+        posT: Math.round(afCurTilt / AF_U),
+        posP: Math.round(afCurPan / AF_U),
+        lost: afM.lost, clamp: afM.clamp.tilt + afM.clamp.pan, sup: afM.sup.tilt + afM.sup.pan, errs: afM.errs
+      });
+      const stateChanged = sig !== afdiagLastSummarySig;
+      const heartbeatDue = (nowWall - afdiagLastHeartbeatAt) >= 30000;
+      if (!stateChanged && !heartbeatDue) return; // ticking alone is not a change -- don't fill the buffer
+      afdiagLastSummarySig = sig;
+      afdiagLastHeartbeatAt = nowWall;
+      const vis = (afLocked && afM.vis) ? (afM.vis.mean.toFixed(2) + '/' + afM.vis.min.toFixed(2)) : '—';
+      afdiag((stateChanged ? 'summary' : 'heartbeat') + ' — framing=' + afFraming +
+        ' locked=' + afLocked +
+        ' pos T' + (afCurTilt / AF_U).toFixed(0) + '°/P' + (afCurPan / AF_U).toFixed(0) + '°' +
+        ' vis(mean/min)=' + vis +
+        ' unconfirmed=' + afInvUnconfirmed +
+        ' video(ready=' + (el ? el.readyState : '—') + ',w=' + (el ? el.videoWidth : '—') + ')' +
+        ' counts(lost=' + afM.lost + ',clamp=' + (afM.clamp.tilt + afM.clamp.pan) + ',sup=' + (afM.sup.tilt + afM.sup.pan) + ',errs=' + afM.errs + ')');
+    } catch (e) {}
+  }
+
+  afdiagLoad();
+  setInterval(afdiagFlush, AFDIAG_FLUSH_MS);
+  setInterval(afdiagSummaryTick, 1000);
+  try { window.addEventListener('pagehide', afdiagFlush); } catch (e) {}
+  try { window.addEventListener('beforeunload', afdiagFlush); } catch (e) {}
+
+  afdiag('PAGE LOAD — [build] index-pingpong 2026-10-24 — inv=' +
+    (params.get('inv') || '(none)') +
+    (AF_FORCE_MODE ? ' (order-keyed: index0=Door, index1=Rack)' : ''));
+  // ===== AF DIAGNOSTIC LOGGER: JS END =======================================
+
+  // ---- panel -------------------------------------------------------------
+  const afStyle = document.createElement('style');
+  afStyle.textContent = `
+  #afToggle{position:fixed;right:10px;bottom:10px;z-index:99998;
+    background:rgba(20,22,26,.86);color:#dfe6ee;border:1px solid #3a4250;
+    border-radius:8px;padding:7px 11px;font:600 12px/1 system-ui,sans-serif;
+    cursor:pointer;backdrop-filter:blur(4px)}
+  #afToggle.live{border-color:#2e9e5b;color:#7fe0a3}
+  #afPanel{position:fixed;right:10px;bottom:50px;z-index:99999;width:310px;
+    max-height:78vh;overflow:auto;display:none;background:rgba(16,18,22,.95);
+    color:#dfe6ee;border:1px solid #3a4250;border-radius:10px;padding:10px;
+    font:12px/1.35 system-ui,sans-serif;backdrop-filter:blur(6px)}
+  #afPanel.open{display:block}
+  #afPanel h4{margin:0 0 6px;font-size:12px;letter-spacing:.04em;color:#9fb0c4;
+    text-transform:uppercase}
+  #afPanel .row{display:flex;justify-content:space-between;gap:6px;margin:3px 0}
+  #afPanel .row span:last-child{font-variant-numeric:tabular-nums;color:#fff}
+  #afPanel button{width:100%;margin:4px 0;padding:7px;border-radius:7px;
+    border:1px solid #3a4250;background:#222833;color:#dfe6ee;font-weight:600;
+    cursor:pointer}
+  #afPanel button.go{background:#1d6b3f;border-color:#2e9e5b;color:#dff5e7}
+  #afPanel button:disabled{opacity:.45;cursor:default}
+  #afPanel label{display:flex;align-items:center;gap:6px;margin:3px 0}
+  #afPanel input[type=range]{width:100%}
+  #afPrev{width:100%;border-radius:6px;background:#000;display:block;margin:6px 0}
+  #afLog{max-height:110px;overflow:auto;font:11px/1.3 ui-monospace,monospace;
+    background:#0c0e12;border-radius:6px;padding:5px;margin-top:6px}
+  #afLog div{white-space:pre-wrap}
+  .af-warn{color:#e8c46a}.af-err{color:#ef8080}.af-ok{color:#7fe0a3}
+  #afPanel hr{border:0;border-top:1px solid #2b313c;margin:8px 0}
+  #afPanel .sl{margin:5px 0}
+  #afPanel .sl b{font-weight:600;color:#9fb0c4}
+  `;
+  document.head.appendChild(afStyle);
+
+  const afToggle = document.createElement('button');
+  afToggle.id = 'afToggle';
+  afToggle.textContent = 'Advanced';
+  document.body.appendChild(afToggle);
+
+  const afPanel = document.createElement('div');
+  afPanel.id = 'afPanel';
+  const afSlider = (id, label, min, max, step, val) =>
+    `<div class="sl"><b>${label}</b> <span id="af_${id}V">${val}</span>
+     <input type="range" id="af_${id}" min="${min}" max="${max}" step="${step}" value="${val}"></div>`;
+  afPanel.innerHTML = `
+    <h4>Auto-Frame</h4>
+    <div class="row"><span>Model</span><span id="afPoseState">loading…</span></div>
+    <div class="row"><span>Camera</span><span id="afDev">—</span></div>
+    <div class="row"><span>PTZ</span><span id="afPtz">—</span></div>
+    <button id="afGo" class="go" disabled>▶ Start auto-framing</button>
+    <button id="afCenter">Centre both axes</button>
+    <button id="afSetHome">Set home = current position</button>
+    <button id="afResetHome">Reset home</button>
+    <div class="row"><span>Home (T/P)</span><span id="afHomeVal">—</span></div>
+    <div class="row"><span>Lock</span><span id="afLock">—</span></div>
+    <canvas id="afPrev" width="300" height="169"></canvas>
+    <div class="row"><span>Video</span><span id="afFps">—</span></div>
+    <div class="row"><span>Detect</span><span id="afDet">—</span></div>
+    <div class="row"><span>Position</span><span id="afPos">—</span></div>
+    <div class="row"><span>Slew peak</span><span id="afSlew">—</span></div>
+    <div class="row"><span>Torso vis</span><span id="afVis">—</span></div>
+    <div class="row"><span>Lost / sup / clamp</span><span id="afCounts">—</span></div>
+    <hr>
+    <label><input type="checkbox" id="af_invT"> Invert tilt</label>
+    <label><input type="checkbox" id="af_invP"> Invert pan</label>
+    <label><input type="checkbox" id="af_panOn"> Pan enabled</label>
+    <span id="afInvSaved" class="af-warn"></span>
+    <hr>
+    ${afSlider('torso', 'Torso vertical target', 0.30, 0.55, 0.01, AF_DEFAULTS.torso)}
+    ${afSlider('vDead', 'Tilt deadzone', 0.02, 0.20, 0.01, AF_DEFAULTS.vDead)}
+    ${afSlider('hDead', 'Pan deadzone', 0.02, 0.20, 0.01, AF_DEFAULTS.hDead)}
+    ${afSlider('stepT', 'Tilt step °', 1, 20, 1, AF_DEFAULTS.stepT)}
+    ${afSlider('stepP', 'Pan step °', 1, 30, 1, AF_DEFAULTS.stepP)}
+    ${afSlider('tGain', 'Tilt gain', 20000, 400000, 10000, AF_DEFAULTS.tGain)}
+    ${afSlider('pGain', 'Pan gain', 20000, 500000, 10000, AF_DEFAULTS.pGain)}
+    ${afSlider('rate', 'Command rate ms', 100, 1000, 50, AF_DEFAULTS.rate)}
+    ${afSlider('smooth', 'Smoothing', 0.05, 1.0, 0.05, AF_DEFAULTS.smooth)}
+    ${afSlider('reacq', 'Recentre after s (0=never)', 0, 15, 1, AF_DEFAULTS.reacq)}
+    ${afSlider('detHz', 'Detect rate Hz', 4, 30, 1, AF_DEFAULTS.detHz)}
+    <div id="afLog"></div>
+  `;
+  document.body.appendChild(afPanel);
+
+  // AF DIAGNOSTIC LOGGER: export/clear controls, appended to the existing
+  // Advanced panel without touching its template above. The text box is the
+  // guaranteed retrieval path (select + copy); the download button is a
+  // bonus that may silently fail under the launcher's bwrap sandbox.
+  const afdiagSection = document.createElement('div');
+  afdiagSection.innerHTML = `
+    <hr>
+    <h4>Diagnostic Log</h4>
+    <button id="afdiagExportBtn">Export log to box below</button>
+    <button id="afdiagDownloadBtn">Download log (.txt)</button>
+    <button id="afdiagClearBtn">Clear log</button>
+    <textarea id="afdiagBox" readonly rows="8"
+      style="width:100%;margin-top:6px;box-sizing:border-box;font:11px/1.3 ui-monospace,monospace;
+      background:#0c0e12;color:#dfe6ee;border:1px solid #2b313c;border-radius:6px;"></textarea>
+  `;
+  afPanel.appendChild(afdiagSection);
+
+  function afdiagAllLines() {
+    try { afdiagFlush(); return afdiagBuf.join('\n'); }
+    catch (e) { return '(log unavailable: ' + (e && e.message) + ')'; }
+  }
+
+  const afdiagExportBtn = document.getElementById('afdiagExportBtn');
+  const afdiagDownloadBtn = document.getElementById('afdiagDownloadBtn');
+  const afdiagClearBtn = document.getElementById('afdiagClearBtn');
+  const afdiagBox = document.getElementById('afdiagBox');
+
+  if (afdiagExportBtn) {
+    afdiagExportBtn.addEventListener('click', () => {
+      try {
+        afdiagBox.value = afdiagAllLines();
+        afdiagBox.focus();
+        afdiagBox.select();
+      } catch (e) {}
+    });
+  }
+  if (afdiagDownloadBtn) {
+    afdiagDownloadBtn.addEventListener('click', () => {
+      try {
+        const text = afdiagAllLines();
+        const blob = new Blob([text], { type: 'text/plain' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'afdiag-log-' + new Date().toISOString().replace(/[:.]/g, '-') + '.txt';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => { try { URL.revokeObjectURL(url); } catch (e) {} }, 5000);
+      } catch (e) {
+        try { afdiagBox.value = 'Download failed (' + e.message + ') — use "Export log to box below" instead.'; } catch (e2) {}
+      }
+    });
+  }
+  if (afdiagClearBtn) {
+    afdiagClearBtn.addEventListener('click', () => {
+      try {
+        afdiagBuf = [];
+        afdiagPending = [];
+        localStorage.removeItem(AFDIAG_LS_LOG);
+        afdiagBox.value = '';
+        afdiag('log CLEARED by user');
+      } catch (e) {}
+    });
+  }
+
+  // RECOVER MODULE: bench-test buttons -- exercise the real recovery paths, not a fake
+  // parallel one, so what you see here is exactly what production does.
+  const recoverySection = document.createElement('div');
+  recoverySection.innerHTML = `
+    <hr>
+    <h4>Recovery Test</h4>
+    <button id="simSignalDropBtn">Simulate signaling drop</button>
+    <button id="simMediaDropBtn">Simulate media drop</button>
+  `;
+  afPanel.appendChild(recoverySection);
+
+  const simSignalDropBtn = document.getElementById('simSignalDropBtn');
+  const simMediaDropBtn = document.getElementById('simMediaDropBtn');
+
+  if (simSignalDropBtn) {
+    simSignalDropBtn.addEventListener('click', () => {
+      afdiag('TEST simulate signaling drop — force-closing ws');
+      if (ws) ws.close(4000, 'simulated-drop'); // real close -> onclose -> scheduleReconnect, same as a genuine drop
+    });
+  }
+  if (simMediaDropBtn) {
+    simMediaDropBtn.addEventListener('click', () => {
+      afdiag('TEST simulate media drop — forcing ICE restart path');
+      if (pc && amCaller) attemptIceRestart(true); // force bypasses the "already connected" early-return
+      else afdiag('TEST simulate media drop — skipped (no pc, or this side is not the caller)');
+    });
+  }
+
+  const afQ = (id) => document.getElementById(id);
+  const afPrev = afQ('afPrev'), afPrevCtx = afPrev.getContext('2d');
+
+  function afLog(m, c) {
+    const d = document.createElement('div');
+    if (c) d.className = c;
+    d.textContent = new Date().toLocaleTimeString() + '  ' + m;
+    const box = afQ('afLog');
+    box.appendChild(d);
+    while (box.childNodes.length > 200) box.removeChild(box.firstChild);
+    box.scrollTop = box.scrollHeight;
+  }
+
+  afToggle.addEventListener('click', () => {
+    afPanelOpen = !afPanelOpen;
+    afPanel.classList.toggle('open', afPanelOpen);
+  });
+
+  // ---- tuning persistence ------------------------------------------------
+  const AF_SLIDERS = ['torso','vDead','hDead','stepT','stepP','tGain','pGain','rate','smooth','reacq','detHz'];
+  function afReadTune() {
+    AF_SLIDERS.forEach((k) => { afT[k] = +afQ('af_' + k).value; });
+    afT.panOn = afQ('af_panOn').checked;
+    afT.invT  = afQ('af_invT').checked;
+    afT.invP  = afQ('af_invP').checked;
+  }
+  function afSaveTune() {
+    try {
+      const o = {};
+      AF_SLIDERS.forEach((k) => { o[k] = afQ('af_' + k).value; });
+      o.panOn = afQ('af_panOn').checked;
+      localStorage.setItem(AF_LS_TUNE, JSON.stringify(o));
+    } catch (e) {}
+  }
+  function afLoadTune() {
+    try {
+      const o = JSON.parse(localStorage.getItem(AF_LS_TUNE) || 'null');
+      if (!o) return false;
+      AF_SLIDERS.forEach((k) => {
+        if (o[k] != null) { afQ('af_' + k).value = o[k]; afQ('af_' + k + 'V').textContent = o[k]; }
+      });
+      if (o.panOn != null) afQ('af_panOn').checked = o.panOn;
+      return true;
+    } catch (e) { return false; }
+  }
+  AF_SLIDERS.forEach((k) => {
+    afQ('af_' + k).addEventListener('input', () => {
+      afQ('af_' + k + 'V').textContent = afQ('af_' + k).value;
+      afReadTune(); afSaveTune();
+    });
+  });
+  afQ('af_panOn').addEventListener('change', () => { afReadTune(); afSaveTune(); });
+
+  // ---- per-camera invert persistence -------------------------------------
+  function afInvStore() {
+    try { return JSON.parse(localStorage.getItem(AF_LS_INV) || '{}'); } catch (e) { return {}; }
+  }
+  function afSaveInv() {
+    if (!afOpenDeviceId) return;
+    try {
+      const s = afInvStore();
+      s[afOpenDeviceId] = { t: afQ('af_invT').checked, p: afQ('af_invP').checked };
+      localStorage.setItem(AF_LS_INV, JSON.stringify(s));
+      afQ('afInvSaved').textContent = 'saved for ' + afOpenDeviceId.slice(0, 8);
+      afQ('afInvSaved').className = 'af-ok';
+    } catch (e) {}
+  }
+  // ORDERING FIX (v13 defect): this runs while the controls are still disabled,
+  // BEFORE the user can touch a checkbox. In v13 it ran at the end of
+  // startStream(), so a hand-set pair was silently overwritten on every open —
+  // four combinations were set and one combination was tested, four times.
+  function afRestoreInv() {
+    afQ('afInvSaved').textContent = '';
+
+    // Guarantee A, step 1 (PER-CAMERA) — a launcher-forced map (inv=door) is
+    // authoritative. afOpenDeviceId is set by the caller (startStream) BEFORE this
+    // runs, so the current camera's deviceId is available for lookup here. The map
+    // applies each camera's correct pair with zero hand-setting; localStorage is
+    // skipped entirely in forced mode. An unrecognised deviceId fails SAFE.
+    if (AF_FORCE_MODE) {
+      afInvUnconfirmed = false;
+      const hit = afRoleFor(afOpenDeviceId);
+      if (hit) {
+        afQ('af_invT').checked = hit.t;
+        afQ('af_invP').checked = hit.p;
+        afQ('af_panOn').checked = true;
+        afReadTune();
+        afQ('afInvSaved').textContent = 'forced (' + hit.role + '): tilt ' + (hit.t ? 'ON' : 'OFF') + '/pan ' + (hit.p ? 'ON' : 'OFF');
+        afQ('afInvSaved').className = 'af-ok';
+        afLog('Inverts forced per-camera (' + hit.role + ', ' + (afOpenDeviceId || '').slice(0, 8) + '): tilt ' + (hit.t ? 'ON' : 'OFF') + ', pan ' + (hit.p ? 'ON' : 'OFF') + ' — localStorage skipped.', 'af-ok');
+        try { afdiag('inverts forced (recognised, ' + hit.role.toLowerCase() + '): tilt ' + (hit.t ? 'ON' : 'OFF') + ' pan ' + (hit.p ? 'ON' : 'OFF')); } catch (e2) {}
+      } else {
+        // UNRECOGNISED camera — deviceId not in the baked map (replug shuffle or a
+        // third camera). Force pan OFF (non-runaway) and HOLD auto-framing until a
+        // human confirms inverts. The caller checks afInvUnconfirmed before enabling
+        // the Go button, so this camera physically cannot auto-frame unconfirmed.
+        afInvUnconfirmed = true;
+        afQ('af_invT').checked = AF_FORCE_FALLBACK.t;
+        afQ('af_invP').checked = AF_FORCE_FALLBACK.p;
+        afQ('af_panOn').checked = true;
+        afReadTune();
+        afQ('afInvSaved').textContent = 'UNRECOGNISED cam ' + (afOpenDeviceId || '').slice(0, 8) + ' — auto-framing HELD; confirm inverts';
+        afQ('afInvSaved').className = 'af-warn';
+        afLog('Unrecognised camera ' + (afOpenDeviceId || '').slice(0, 8) + ' at index ' + afCameraIndex(afOpenDeviceId) + ' — expected exactly two (index0=Door, index1=Rack) from the remap launcher. Pan forced OFF and auto-framing HELD (safe). If you see this, the launcher did not pin both cameras: relaunch via the icon, or confirm inverts by hand to enable.', 'af-warn');
+        try { afdiag('UNRECOGNISED camera adopted (index ' + afCameraIndex(afOpenDeviceId) + ') — auto-framing HELD, pan forced OFF'); } catch (e2) {}
+      }
+      return;
+    }
+
+    if (!afOpenDeviceId) return;
+    const s = afInvStore()[afOpenDeviceId];
+    if (!s) {
+      // Guarantee A, step 2 — SAFETY FALLBACK (fixes the failed-session cause).
+      // With no saved pair, fall to the known-good default (tilt ON, pan ON from
+      // AF_DEFAULTS) rather than leaving the HTML default of OFF/OFF, which drove
+      // the door camera the wrong way and parked it at a limit. Not written back
+      // to localStorage — a fallback is not a decision.
+      afQ('af_invT').checked = AF_DEFAULTS.invT;
+      afQ('af_invP').checked = AF_DEFAULTS.invP;
+      afReadTune();
+      afQ('afInvSaved').textContent = 'no saved pair — default tilt ' + (AF_DEFAULTS.invT ? 'ON' : 'OFF') + '/pan ' + (AF_DEFAULTS.invP ? 'ON' : 'OFF') + ' for ' + afOpenDeviceId.slice(0, 8);
+      afQ('afInvSaved').className = 'af-warn';
+      afLog('No saved inverts for ' + afOpenDeviceId.slice(0, 8) + ' — applied known-good default (tilt ' + (AF_DEFAULTS.invT ? 'ON' : 'OFF') + ', pan ' + (AF_DEFAULTS.invP ? 'ON' : 'OFF') + '). Set them by hand to override; they persist from here.', 'af-warn');
+      return;
+    }
+    afQ('af_invT').checked = !!s.t;
+    afQ('af_invP').checked = !!s.p;
+    afReadTune();
+    afQ('afInvSaved').textContent = 'restored for ' + afOpenDeviceId.slice(0, 8);
+    afQ('afInvSaved').className = 'af-ok';
+    afLog('Inverts restored for ' + afOpenDeviceId.slice(0, 8) + ': tilt ' + (s.t ? 'ON' : 'OFF') + ', pan ' + (s.p ? 'ON' : 'OFF') + '.', 'af-ok');
+  }
+  ['af_invT', 'af_invP'].forEach((id) => {
+    afQ(id).addEventListener('change', () => {
+      afReadTune();
+      afSaveInv();
+      // A human toggling an invert on an UNRECOGNISED camera is the confirmation
+      // that releases the safety hold: clear the flag and enable auto-framing.
+      if (afInvUnconfirmed) {
+        afInvUnconfirmed = false;
+        if (afPoseReady && afTrack && afCaps && afCaps.tilt) afQ('afGo').disabled = false;
+        afQ('afInvSaved').textContent = 'confirmed by hand for ' + (afOpenDeviceId || '').slice(0, 8);
+        afQ('afInvSaved').className = 'af-ok';
+        afLog('Inverts confirmed by hand — auto-framing enabled for ' + (afOpenDeviceId || '').slice(0, 8) + '.', 'af-ok');
+        try { afdiag('inverts confirmed by hand — hold released'); } catch (e2) {}
+      }
+    });
+  });
+
+  // ---- pose model (dynamic import: a CDN failure must not kill the call) ---
+  (async function afInitPose() {
+    try {
+      const vision = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14');
+      const fileset = await vision.FilesetResolver.forVisionTasks(
+        'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm');
+      const make = (delegate) => vision.PoseLandmarker.createFromOptions(fileset, {
+        baseOptions: {
+          modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task',
+          delegate
+        },
+        runningMode: 'VIDEO', numPoses: 1,
+        minPoseDetectionConfidence: 0.5, minTrackingConfidence: 0.5
+      });
+      try {
+        afPose = await make('GPU');
+        afQ('afPoseState').textContent = 'ready (GPU)';
+        afLog('Pose model ready (GPU).', 'af-ok');
+      } catch (e) {
+        afLog('GPU delegate failed, falling back to CPU…', 'af-warn');
+        afPose = await make('CPU');
+        afQ('afPoseState').textContent = 'ready (CPU)';
+        afLog('Pose model ready (CPU).', 'af-warn');
+      }
+      afPoseReady = true;
+      if (afTrack && afCaps && afCaps.tilt) afQ('afGo').disabled = false;
+      afMaybeAutoStart('pose ready');
+    } catch (err) {
+      afPoseError = err;
+      afQ('afPoseState').textContent = 'FAILED';
+      afLog('Pose model failed to load: ' + err.message + ' — the call is unaffected; auto-framing is unavailable.', 'af-err');
+    }
+  })();
+
+  // ---- motor command queue (ported from v13) -----------------------------
+  function afClamp(axis, v) {
+    const c = afCaps[axis];
+    const requested = Math.round(v);
+    let out = Math.max(c.min, Math.min(c.max, requested));
+    // AFFIX (fix D): soft down-cap on top of the camera's own hardware limit,
+    // logged at the point of decision -- this is why the old post-hoc "clamped
+    // at limit" check in afPump could never fire for a normal, working clamp:
+    // afClamp already trimmed the value before it was ever sent.
+    if (axis === 'tilt') {
+      const capUnits = Math.round(AF_TILT_MAX_DOWN * AF_U);
+      if (out > capUnits) {
+        const hwClamped = out;
+        out = capUnits;
+        afLog('tilt DOWN-CAPPED at ' + AF_TILT_MAX_DOWN + '° (requested ' + (requested / AF_U).toFixed(0) + '°, hw limit ' + (hwClamped / AF_U).toFixed(0) + '°).', 'af-warn');
+        try { afdiag('tilt DOWN-CAPPED at ' + AF_TILT_MAX_DOWN + '° (requested ' + (requested / AF_U).toFixed(1) + '°, hw-clamped ' + (hwClamped / AF_U).toFixed(1) + '°)'); } catch (e) {}
+      }
+    }
+    return out;
+  }
+  // PINGPONG BUILD (B): no PTZ while the page is hidden. Every pan/tilt command
+  // funnels through afQueue/afPump and the open-time zoom checks this too, so
+  // one gate covers drive, centre, HOME and zoom. One "paused" line when the
+  // first command is skipped, one "resumed" line on return -- no per-command log.
+  let afPtzPaused = false;
+  function afPtzHiddenSkip() {
+    if (!document.hidden) return false;
+    if (!afPtzPaused) {
+      afPtzPaused = true;
+      try { afdiag('PTZ paused (page hidden)'); } catch (e2) {}
+    }
+    return true;
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && afPtzPaused) {
+      afPtzPaused = false;
+      try { afdiag('PTZ resumed'); } catch (e2) {}
+      afPump(); // nothing queued while hidden, so this is a no-op unless a command raced in
+    }
+  });
+  function afQueue(axis, val) {
+    if (afPtzHiddenSkip()) { afWant[axis] = null; return; } // drop, don't buffer: a stale target on resume is worse than none
+    if (afWant[axis] !== null) afM.sup[axis]++;
+    afWant[axis] = val;
+    afPump();
+  }
+  async function afPump() {
+    if (afCmdInFlight || !afTrack) return;
+    if (afPtzHiddenSkip()) { afWant = { tilt: null, pan: null }; return; } // (B) a command queued just before hide
+    const order = afPumpAlt ? ['pan', 'tilt'] : ['tilt', 'pan'];
+    let axis = null;
+    for (const a of order) { if (afWant[a] !== null) { axis = a; break; } }
+    if (axis === null) return;
+    afPumpAlt ^= 1;
+    const val = afWant[axis];
+    afWant[axis] = null;
+    const before = (axis === 'tilt') ? afCurTilt : afCurPan;
+    afCmdInFlight = true;
+    try {
+      await afTrack.applyConstraints({ advanced: [{ [axis]: val }] });
+      const s = afTrack.getSettings ? afTrack.getSettings() : {};
+      const rep = (typeof s[axis] === 'number') ? s[axis] : val;
+      if (Math.abs(rep - val) > AF_U / 2) {
+        afM.clamp[axis]++;
+        if (afM.clamp[axis] === 1 || afM.clamp[axis] % 20 === 0) {
+          afLog(axis + ' clamped at limit (asked ' + (val / AF_U).toFixed(0) + '°, got ' + (rep / AF_U).toFixed(0) + '°).', 'af-warn');
+        }
+      }
+      try {
+        afdiag('PTZ ' + axis + ' -> ' + (val / AF_U).toFixed(1) + '° (reported ' + (rep / AF_U).toFixed(1) + '°)' +
+          (Math.abs(rep - val) > AF_U / 2 ? ' CLAMPED' : ''));
+      } catch (e2) {}
+      const moved = Math.abs(rep - before) / AF_U;
+      if (axis === 'tilt') { afCurTilt = rep; if (moved > afM.peakT) afM.peakT = moved; }
+      else { afCurPan = rep; if (moved > afM.peakP) afM.peakP = moved; }
+    } catch (e) {
+      afM.errs++;
+      afLog('applyConstraints: ' + e.message, 'af-err');
+      try { afdiag('PTZ ' + axis + ' -> ' + (val / AF_U).toFixed(1) + '° FAILED: ' + (e && e.message)); } catch (e2) {}
+    } finally {
+      afCmdInFlight = false;
+    }
+    afPump();
+  }
+  function afCenterBoth() {
+    if (!afTrack || !afCaps) return;
+    if (afCaps.tilt) afQueue('tilt', afClamp('tilt', 0));
+    if (afCaps.pan) afQueue('pan', afClamp('pan', 0));
+    afSmX = afSmY = null;
+  }
+  afQ('afCenter').addEventListener('click', () => { afCenterBoth(); afLog('Centred.'); });
+
+  // ---- AFFIX (fix E): resync cached position from the camera's actual -----
+  // reported settings before trusting it for a drive computation. Fixes the
+  // "external recentre gets silently overridden back" failure -- the old code
+  // only ever updated afCurTilt/afCurPan from OUR OWN command replies.
+  function afSyncActualPosition() {
+    if (!afTrack || !afTrack.getSettings) return;
+    try {
+      const st = afTrack.getSettings();
+      if (typeof st.tilt === 'number') {
+        const diff = Math.abs(st.tilt - afCurTilt) / AF_U;
+        if (diff > 2) {
+          afLog('tilt drifted: cached ' + (afCurTilt / AF_U).toFixed(0) + '°, actual ' + (st.tilt / AF_U).toFixed(0) + '° — resyncing.', 'af-warn');
+          try { afdiag('tilt drift ' + diff.toFixed(1) + '° (cached ' + (afCurTilt / AF_U).toFixed(0) + '° -> actual ' + (st.tilt / AF_U).toFixed(0) + '°) — resynced'); } catch (e2) {}
+        }
+        afCurTilt = st.tilt;
+      }
+      if (typeof st.pan === 'number') {
+        const diff = Math.abs(st.pan - afCurPan) / AF_U;
+        if (diff > 2) {
+          afLog('pan drifted: cached ' + (afCurPan / AF_U).toFixed(0) + '°, actual ' + (st.pan / AF_U).toFixed(0) + '° — resyncing.', 'af-warn');
+          try { afdiag('pan drift ' + diff.toFixed(1) + '° (cached ' + (afCurPan / AF_U).toFixed(0) + '° -> actual ' + (st.pan / AF_U).toFixed(0) + '°) — resynced'); } catch (e2) {}
+        }
+        afCurPan = st.pan;
+      }
+    } catch (e) {}
+  }
+
+  // ---- AFFIX (fix C): per-camera HOME, replacing 0/0 as the recovery target
+  // Door gets a built-in default (30° down / 0° pan); rack gets a built-in
+  // default too (32° tilt / -17° pan). Unrecognised/unforced cameras keep
+  // today's behaviour (literal 0/0), same as afCenterBoth() above.
+  function afHomeStore() {
+    try { return JSON.parse(localStorage.getItem(AF_LS_HOME) || '{}'); } catch (e) { return {}; }
+  }
+  function afPaintHome() {
+    try {
+      const el = afQ('afHomeVal');
+      if (el) el.textContent = afHomeTilt.toFixed(0) + '° / ' + afHomePan.toFixed(0) + '°';
+    } catch (e) {}
+  }
+  function afLoadHome() {
+    afHomeTilt = 0; afHomePan = 0; // fallback: today's behaviour until a home is known
+    if (afOpenDeviceId) {
+      const s = afHomeStore()[afOpenDeviceId];
+      if (s && typeof s.tilt === 'number' && typeof s.pan === 'number') {
+        afHomeTilt = s.tilt; afHomePan = s.pan;
+        afPaintHome();
+        return;
+      }
+    }
+    // No saved home for this camera -- a recognised DOOR or RACK gets its
+    // built-in non-zero default. Unrecognised/unforced stays 0/0.
+    if (AF_FORCE_MODE) {
+      const hit = afRoleFor(afOpenDeviceId);
+      if (hit && hit.role === 'Door') {
+        afHomeTilt = AF_HOME_TILT_DEFAULT;
+        afHomePan = AF_HOME_PAN_DEFAULT;
+      } else if (hit && hit.role === 'Rack') {
+        afHomeTilt = AF_HOME_TILT_RACK_DEFAULT;
+        afHomePan = AF_HOME_PAN_RACK_DEFAULT;
+      }
+    }
+    afPaintHome();
+  }
+  function afSaveHomeCurrent() {
+    if (!afOpenDeviceId || !afTrack) { afLog('No camera adopted — cannot set home.', 'af-warn'); return; }
+    afSyncActualPosition();
+    afHomeTilt = afCurTilt / AF_U;
+    afHomePan = afCurPan / AF_U;
+    try {
+      const s = afHomeStore();
+      s[afOpenDeviceId] = { tilt: afHomeTilt, pan: afHomePan };
+      localStorage.setItem(AF_LS_HOME, JSON.stringify(s));
+    } catch (e) {}
+    afPaintHome();
+    afLog('Home set to current position: tilt ' + afHomeTilt.toFixed(0) + '°, pan ' + afHomePan.toFixed(0) + '° (' + (afOpenDeviceId || '').slice(0, 8) + ').', 'af-ok');
+    try { afdiag('home SET (' + afHomeTilt.toFixed(0) + '°/' + afHomePan.toFixed(0) + '°)'); } catch (e2) {}
+  }
+  function afResetHome() {
+    if (afOpenDeviceId) {
+      try {
+        const s = afHomeStore();
+        delete s[afOpenDeviceId];
+        localStorage.setItem(AF_LS_HOME, JSON.stringify(s));
+      } catch (e) {}
+    }
+    afLoadHome(); // re-derive: door/rack default, or 0/0 for unrecognised
+    afLog('Home reset for ' + (afOpenDeviceId || '').slice(0, 8) + ': tilt ' + afHomeTilt.toFixed(0) + '°, pan ' + afHomePan.toFixed(0) + '°.', 'af-ok');
+    try { afdiag('home RESET (' + afHomeTilt.toFixed(0) + '°/' + afHomePan.toFixed(0) + '°)'); } catch (e2) {}
+  }
+  function afGoHome() {
+    if (!afTrack || !afCaps) return;
+    if (afCaps.tilt) afQueue('tilt', afClamp('tilt', afHomeTilt * AF_U));
+    if (afCaps.pan) afQueue('pan', afClamp('pan', afHomePan * AF_U));
+    afSmX = afSmY = null;
+  }
+  afQ('afSetHome').addEventListener('click', () => { afSaveHomeCurrent(); });
+  afQ('afResetHome').addEventListener('click', () => { afResetHome(); });
+
+  afQ('afGo').addEventListener('click', () => {
+    if (!afTrack) { afLog('No camera track yet.', 'af-warn'); return; }
+    afFraming = !afFraming;
+    afQ('afGo').textContent = afFraming ? '⏸ Stop auto-framing' : '▶ Start auto-framing';
+    afQ('afGo').className = afFraming ? '' : 'go';
+    afToggle.classList.toggle('live', afFraming);
+    afToggle.textContent = afFraming ? 'Advanced ●' : 'Advanced';
+    afSmX = afSmY = null; afSolidCount = 0; afLocked = false; afLastLockedAt = performance.now(); afHomed = false; afHadLms = false;
+    afLog(afFraming ? 'Auto-framing ON.' : 'Auto-framing OFF.', afFraming ? 'af-ok' : 'af-warn');
+  });
+
+  // ---- family auto-start (2026-07-31) ------------------------------------
+  // afStartFraming: turn framing ON hands-free, mirroring the afGo ON path
+  // exactly. Guarded so it is safe by construction — every precondition the
+  // manual Start click relies on must already hold, or it returns without
+  // doing anything.
+  function afStartFraming(reason) {
+    if (afFraming) return;                // already running
+    if (!afTrack) return;                 // no camera track yet
+    if (!afCaps || !afCaps.tilt) return;  // no tilt = trainer's phone — never auto-start
+    if (!afPoseReady) return;             // pose model not loaded yet
+    if (afInvUnconfirmed) return;         // unrecognised camera stays held (fail-safe)
+    afFraming = true;
+    afQ('afGo').textContent = '⏸ Stop auto-framing';
+    afQ('afGo').className = '';
+    afToggle.classList.add('live');
+    afToggle.textContent = 'Advanced ●';
+    afSmX = afSmY = null; afSolidCount = 0; afLocked = false; afLastLockedAt = performance.now(); afHomed = false; afHadLms = false;
+    afLog('Auto-framing ON (auto-started: ' + reason + ').', 'af-ok');
+  }
+
+  // afMaybeAutoStart: only auto-start when the per-camera map is active
+  // (i.e. ?inv=door). A plain load with no map keeps the original
+  // manual-click behaviour completely untouched.
+  function afMaybeAutoStart(reason) {
+    if (!AF_FORCE_MODE) return;
+    afStartFraming(reason);
+  }
+
+  // ---- track adoption ----------------------------------------------------
+  async function afAdoptTrack(t) {
+    // AF DIAGNOSTIC LOGGER: log-only track lifecycle listeners -- detach from
+    // the outgoing track, adopt as before, attach to the incoming one. Never
+    // changes what auto-framing does with the track; only observes
+    // ended/mute/unmute, which is our best signal for a camera that vanishes
+    // mid-session without a full device-list change.
+    afdiagDetachTrackListeners(afTrack);
+    afTrack = t;
+    afdiagAttachTrackListeners(afTrack);
+    afCaps = null; afOpenDeviceId = null;
+    afWant = { tilt: null, pan: null };
+    afCmdInFlight = false;
+    afSmX = afSmY = null; afSolidCount = 0; afLocked = false; afLastLockedAt = performance.now(); afHomed = false; afHadLms = false;
+    if (afFraming) {
+      afFraming = false;
+      afQ('afGo').textContent = '▶ Start auto-framing';
+      afQ('afGo').className = 'go';
+      afToggle.classList.remove('live');
+      afToggle.textContent = 'Advanced';
+      afLog('Camera changed — re-adopting…', 'af-warn');
+    }
+    afQ('afGo').disabled = true;
+    if (!t) { afQ('afDev').textContent = '—'; afQ('afPtz').textContent = '—'; return; }
+
+    const st = t.getSettings ? t.getSettings() : {};
+    afOpenDeviceId = st.deviceId || null;
+    afCaps = t.getCapabilities ? t.getCapabilities() : {};
+    afCurTilt = (typeof st.tilt === 'number') ? st.tilt : 0;
+    afCurPan = (typeof st.pan === 'number') ? st.pan : 0;
+    afM.sup = { tilt: 0, pan: 0 }; afM.clamp = { tilt: 0, pan: 0 };
+    afM.peakT = 0; afM.peakP = 0; afM.detMax = 0; afM.detN = 0; afM.detSum = 0;
+
+    afQ('afDev').textContent = afOpenDeviceId ? afOpenDeviceId.slice(0, 8) : '(no id)';
+    const hasT = afCaps && afCaps.tilt && typeof afCaps.tilt.max === 'number';
+    const hasP = afCaps && afCaps.pan && typeof afCaps.pan.max === 'number';
+    afQ('afPtz').textContent = (hasT ? 'tilt ' : '') + (hasP ? 'pan ' : '') + (afCaps.zoom ? 'zoom' : '') || 'none';
+
+    // PINGPONG BUILD (C): log the hardware PTZ ranges for this camera + its role.
+    // Rack is the gym camera; non-forced or out-of-range -> unrecognised.
+    try {
+      const hit = afRoleFor(afOpenDeviceId);
+      const role = hit ? (hit.role === 'Door' ? 'door' : 'gym') : 'unrecognised';
+      const rng = (a) => (afCaps && afCaps[a] && typeof afCaps[a].max === 'number')
+        ? afCaps[a].min + '..' + afCaps[a].max + (afCaps[a].step ? ' step ' + afCaps[a].step : '')
+        : 'none';
+      afdiag('CAPS role=' + role + ' (' + (afOpenDeviceId || '').slice(0, 8) + ')' +
+        ' pan=' + rng('pan') + ' tilt=' + rng('tilt') + ' zoom=' + rng('zoom'));
+    } catch (e2) {}
+
+    // Restore BEFORE the controls become usable — see afRestoreInv().
+    afRestoreInv();
+    afLoadHome(); // AFFIX (fix C): per-camera home -- door default, rack stays 0/0 until set
+
+    // Widest zoom on open: a wider frame is fewer losses (v14 item 3).
+    if (afPtzHiddenSkip()) {
+      // (B) adopted while hidden: skip the widest-zoom command for this adoption
+    } else if (afCaps.zoom && typeof afCaps.zoom.min === 'number') {
+      try {
+        await t.applyConstraints({ advanced: [{ zoom: afCaps.zoom.min }] });
+        afLog('Zoom set to widest (' + afCaps.zoom.min + ').');
+        try { afdiag('PTZ zoom -> widest (' + afCaps.zoom.min + ')'); } catch (e2) {}
+      } catch (e) { afLog('Zoom set failed: ' + e.message, 'af-warn'); }
+    } else {
+      afLog('No zoom capability reported on this unit.', 'af-warn');
+    }
+
+    if (hasT) {
+      // Hold the Go button for an unrecognised camera (afInvUnconfirmed) so it
+      // cannot auto-frame until a human confirms inverts. Recognised cameras and
+      // the non-forced path enable normally.
+      if (afPoseReady && !afInvUnconfirmed) afQ('afGo').disabled = false;
+      if (afInvUnconfirmed) {
+        afQ('afGo').disabled = true;
+        afLog('Camera ' + (afOpenDeviceId || '').slice(0, 8) + ' adopted but UNRECOGNISED — auto-framing held. Confirm inverts (toggle a checkbox) to enable.', 'af-warn');
+        try { afdiag('camera adopted but UNRECOGNISED — auto-framing held'); } catch (e2) {}
+      } else {
+        afLog('Camera ' + (afOpenDeviceId || '').slice(0, 8) + ' adopted. Tilt/pan available.', 'af-ok');
+        try { afdiag('camera adopted, tilt/pan available (' + (afOpenDeviceId || '').slice(0, 8) + ')'); } catch (e2) {}
+        afMaybeAutoStart('camera adopted');
+      }
+    } else {
+      afLog('This camera exposes no tilt — pick a PIXY in the camera list.', 'af-err');
+      try { afdiag('camera adopted, NO TILT capability (' + (afOpenDeviceId || '').slice(0, 8) + ')'); } catch (e2) {}
+    }
+  }
+
+  // ---- pose helpers ------------------------------------------------------
+  function afAvg(lms, idx, key) {
+    let s = 0, n = 0;
+    idx.forEach((i) => {
+      const p = lms[i];
+      if (p && (p.visibility == null || p.visibility > 0.4)) { s += p[key]; n++; }
+    });
+    return n ? s / n : null;
+  }
+  const afEma = (prev, val, a) => (prev === null ? val : prev + a * (val - prev));
+  function afVisStats(lms) {
+    let s = 0, n = 0, mn = 1;
+    for (const i of AF_TORSO) {
+      const p = lms[i];
+      if (!p) continue;
+      const v = (p.visibility == null) ? 1 : p.visibility;
+      s += v; n++; if (v < mn) mn = v;
+    }
+    return n ? { mean: s / n, min: mn } : null;
+  }
+
+  // ---- drive (ported from v13 maybeDrive) --------------------------------
+  // AFFIX (fixes A/B/E): rewritten around a debounced "solid lock" instead of
+  // trusting any single frame's landmarks. A detection only counts once
+  // AF_LOCK_N consecutive frames clear AF_VIS_MIN; NO drive command is
+  // computed without a solid lock (fix A). The HOME recovery timer is driven
+  // off "time since we last HAD a solid lock," not off raw per-frame
+  // presence, so phantom single-frame detections (the flicker that caused
+  // the 3-minute stuck-down incident) can no longer reset it (fix B). Going
+  // HOME is the one deliberate exception to "no drive without lock" -- it IS
+  // the lock-loss response.
+  function afMaybeDrive(result) {
+    const now = performance.now();
+    const lms = result && result.landmarks && result.landmarks[0];
+    const afVS = lms ? afVisStats(lms) : null;
+    const goodFrame = !!(afVS && afVS.min >= AF_VIS_MIN);
+
+    // Raw landmark-presence edge log -- the flicker signal itself, kept
+    // distinct from the debounced lock signal below. This is what let us
+    // diagnose the phantom-floor-detection incident from the log in the
+    // first place; the lock logic below acts on it, but doesn't replace it.
+    try {
+      if (lms && !afHadLms) { afHadLms = true; afdiag('landmarks acquired'); }
+      else if (!lms && afHadLms) { afHadLms = false; afdiag('landmarks LOST'); }
+    } catch (e2) {}
+
+    if (goodFrame) {
+      afSolidCount++;
+      if (!afLocked && afSolidCount >= AF_LOCK_N) {
+        afLocked = true;
+        try { afdiag('solid lock ACQUIRED (' + AF_LOCK_N + ' consecutive good frames)'); } catch (e2) {}
+      }
+    } else {
+      afSolidCount = 0;
+      if (afLocked) {
+        afLocked = false;
+        try { afdiag('solid lock LOST (' + (lms ? 'low visibility' : 'no landmarks') + ')'); } catch (e2) {}
+      }
+    }
+
+    if (afLocked) {
+      afSyncActualPosition(); // fix E: never drive from a stale cached position
+      afLastLockedAt = now;
+      afHomed = false;        // armed again for the next loss
+    } else {
+      // fix B: unconditional recovery -- no solid lock for the reacquire
+      // window sends the camera HOME, whatever the raw flicker looked like.
+      // afHomed guards against repeating the command every frame while still
+      // unlocked.
+      // PINGPONG BUILD (B): checked here, not only in afQueue, so a hidden page
+      // does not consume afHomed -- HOME stays armed and fires once visible.
+      if (afT.reacq > 0 && !afHomed && now - afLastLockedAt > afT.reacq * 1000 && !afPtzHiddenSkip()) {
+        afHomed = true; afM.lost++;
+        afLog('No solid lock for ' + afT.reacq + 's — going HOME (loss #' + afM.lost + ').', 'af-warn');
+        try { afdiag('HOME recovery triggered (no solid lock for ' + afT.reacq + 's, loss #' + afM.lost + ')'); } catch (e2) {}
+        afSyncActualPosition();
+        afGoHome();
+      }
+      return;
+    }
+
+    if (now - afLastCmd < afT.rate) return;
+    const cX = afAvg(lms, AF_TORSO, 'x'), cY = afAvg(lms, AF_TORSO, 'y');
+    if (cX === null || cY === null) return;
+    afSmX = afEma(afSmX, cX, afT.smooth);
+    afSmY = afEma(afSmY, cY, afT.smooth);
+    afLastCmd = now;
+
+    if (afCaps.tilt) {
+      const errY = afSmY - afT.torso;
+      const mag = Math.abs(errY) - afT.vDead;
+      if (mag > 0) {
+        let d = -Math.sign(errY) * mag * afT.tGain;
+        if (afT.invT) d = -d;
+        const stepU = afT.stepT * AF_U;
+        d = Math.max(-stepU, Math.min(stepU, d));
+        if (Math.abs(d) >= AF_MIN_CMD) afQueue('tilt', afClamp('tilt', afCurTilt + d));
+      }
+    }
+    if (afT.panOn && afCaps.pan) {
+      const errX = afSmX - 0.5;
+      const mag = Math.abs(errX) - afT.hDead;
+      if (mag > 0) {
+        let d = Math.sign(errX) * mag * afT.pGain;
+        if (afT.invP) d = -d;
+        const stepU = afT.stepP * AF_U;
+        d = Math.max(-stepU, Math.min(stepU, d));
+        if (Math.abs(d) >= AF_MIN_CMD) afQueue('pan', afClamp('pan', afCurPan + d));
+      }
+    }
+  }
+
+  // ---- render (panel only — hidden panel costs nothing) -------------------
+  function afRender(result) {
+    if (!afPanelOpen) return;
+    const el = localVideo;
+    if (!el || !el.videoWidth) return;
+    const w = afPrev.width;
+    const h = Math.round(w * el.videoHeight / el.videoWidth);
+    if (afPrev.height !== h) afPrev.height = h;
+    afPrevCtx.drawImage(el, 0, 0, w, h);
+    const lms = result && result.landmarks && result.landmarks[0];
+    if (!lms) return;
+    afPrevCtx.fillStyle = '#7fe0a3';
+    AF_TORSO.forEach((i) => {
+      const p = lms[i];
+      if (!p) return;
+      afPrevCtx.beginPath();
+      afPrevCtx.arc(p.x * w, p.y * h, 3, 0, 6.2832);
+      afPrevCtx.fill();
+    });
+    if (afSmX !== null && afSmY !== null) {
+      const x = afSmX * w, y = afSmY * h;
+      afPrevCtx.strokeStyle = '#4aa3ff';
+      afPrevCtx.lineWidth = 1.5;
+      afPrevCtx.beginPath();
+      afPrevCtx.moveTo(x - 9, y); afPrevCtx.lineTo(x + 9, y);
+      afPrevCtx.moveTo(x, y - 9); afPrevCtx.lineTo(x, y + 9);
+      afPrevCtx.stroke();
+    }
+    afPrevCtx.strokeStyle = 'rgba(255,255,255,.35)';
+    afPrevCtx.lineWidth = 1;
+    afPrevCtx.beginPath();
+    afPrevCtx.moveTo(0, afT.torso * h); afPrevCtx.lineTo(w, afT.torso * h);
+    afPrevCtx.stroke();
+  }
+
+  function afPaint() {
+    if (!afPanelOpen) return;
+    const f = (v, d) => (v == null ? '—' : v.toFixed(d));
+    afQ('afFps').textContent = afM.vidFps == null ? '—' : afM.vidFps.toFixed(1) + ' /s';
+    afQ('afDet').textContent = afM.detMean == null ? '—'
+      : f(afM.detMean, 1) + ' ms (max ' + f(afM.detMax, 0) + ')';
+    afQ('afPos').textContent = 'T ' + (afCurTilt / AF_U).toFixed(0) + '° · P ' + (afCurPan / AF_U).toFixed(0) + '°';
+    afQ('afSlew').textContent = 'T ' + f(afM.peakT, 0) + ' · P ' + f(afM.peakP, 0);
+    afQ('afVis').textContent = (afLocked && afM.vis) ? f(afM.vis.mean, 3) + ' / ' + f(afM.vis.min, 3) : '—';
+    afQ('afCounts').textContent = afM.lost + ' / ' + (afM.sup.tilt + afM.sup.pan) + ' / ' + (afM.clamp.tilt + afM.clamp.pan);
+    afQ('afLock').textContent = afLocked ? 'LOCKED' : ('unlocked (' + afSolidCount + '/' + AF_LOCK_N + ')');
+  }
+
+  // ---- main loop ---------------------------------------------------------
+  // Detection reads a DOWNSCALED offscreen canvas, not the 1080p element the
+  // bench used at 720p. MediaPipe resizes to 256x256 internally, so this costs
+  // nothing in accuracy and removes a 2.25x per-frame texture upload — the
+  // single biggest difference between bench conditions and a live 1080p call.
+  const afDet = document.createElement('canvas');
+  const afDetCtx = afDet.getContext('2d', { willReadFrequently: false });
+  const AF_DET_W = 480;
+
+  function afLoop() {
+    requestAnimationFrame(afLoop);
+    const el = localVideo;
+    if (!el) return;
+
+    const s = el.srcObject;
+    const t = (s && s.getVideoTracks) ? (s.getVideoTracks()[0] || null) : null;
+    if (t !== afTrack) { afAdoptTrack(t); return; }
+    if (!afTrack || el.readyState < 2 || !el.videoWidth) return;
+    if (el.currentTime === afLastVideoTime) return;
+    afLastVideoTime = el.currentTime;
+
+    const now = performance.now();
+    afM.fpsWin++;
+    if (now - afM.fpsAt >= 1000) {
+      afM.vidFps = afM.fpsWin * 1000 / (now - afM.fpsAt);
+      afM.fpsWin = 0; afM.fpsAt = now;
+      afPaint();
+    }
+
+    if (!afPoseReady) return;
+    const interval = 1000 / Math.max(1, afT.detHz);
+    if (now - afLastDetect < interval) return;
+    afLastDetect = now;
+
+    const w = AF_DET_W;
+    const h = Math.round(w * el.videoHeight / el.videoWidth);
+    if (afDet.width !== w || afDet.height !== h) { afDet.width = w; afDet.height = h; }
+    afDetCtx.drawImage(el, 0, 0, w, h);
+
+    let result = null;
+    const t0 = performance.now();
+    try { result = afPose.detectForVideo(afDet, t0); } catch (e) { afM.errs++; }
+    const dt = performance.now() - t0;
+    afM.detN++; afM.detSum += dt;
+    if (dt > afM.detMax) afM.detMax = dt;
+    afM.detMean = afM.detSum / afM.detN;
+    if (afM.detN > 200) { afM.detSum = afM.detMean * 50; afM.detN = 50; }
+
+    const lms = result && result.landmarks && result.landmarks[0];
+    if (lms) afM.vis = afVisStats(lms);
+    afLastResult = result;
+    if (window.__KINESIS__) window.__KINESIS__.consume(result);
+
+    afRender(result);
+    if (afFraming) afMaybeDrive(result);
+  }
+
+  // ---- boot --------------------------------------------------------------
+  if (afLoadTune()) afLog('Tuning restored.', 'af-ok');
+  afReadTune();
+  afLog('Auto-frame module loaded (v14 merge).', 'af-ok');
+  if (!AF_FORCE_MODE) afLog('Inverts are stored per deviceId PER ORIGIN — nothing carries over from the bench on localhost:8090. Expect to set them once here.', 'af-warn');
+  requestAnimationFrame(afLoop);
+  // ===== AUTO-FRAME MODULE: JS END =======================================
+
+
+  init();
+})();
+</script>
+<script>
+/* =======================================================================
+   KINESIS V4 — dormant, flag-gated, READ-ONLY consumer of the pose stream
+   Build 2026-08-22b. Voice arming via VOSK (offline WASM speech), SELF-HOSTED.
+   -----------------------------------------------------------------------
+   - ?kinesis=1 to enable; fully dormant otherwise.
+   - Read-only: reads landmarks via window.__KINESIS__.consume(result),
+     writes ONLY to its own panel + arm/disarm. Never touches WebRTC/PTZ/framing.
+   - Foundation = skeleton adapter (knSkeleton): named joints only.
+   - V2 core unchanged: counting runs only while ARMED; auto-range self-cal.
+   - VOICE (changed in V4): the browser's on-device recognizer was ruled out on
+     this box (mic chain works, zero transcripts). V4 uses VOSK — offline WASM
+     speech, small English model, no account, no Google backend. Phrases:
+     "start set" -> arm, "stop set" -> disarm, reusing the SAME phraseHit()/fire()
+     path proven in V2/V3. Fuzzy match + re-fire guard. Voice defaults OFF (it
+     shares the mic; fine solo, a separate question on a live call). Manual
+     button is the permanent fallback.
+   - ROUTE B (this build): Vosk lib + model SELF-HOSTED from vendor/vosk/ — no CDN
+     dependency for a load-bearing feature. Proven local on 2026-08-22. Override
+     still available via ?voskLib= / ?voskModel= for testing.
+   - Instrument: the panel shows the RAW transcript + any error (V3's panel only
+     showed matches, which hid misses — a null result was undiagnosable).
+   - Safety net: a set auto-disarms after 90 s with no counted rep, so a missed
+     "stop set" can't leave a set running forever.
+   - Calibration override still available: ?down=NN&up=MM
+   ======================================================================= */
+(function () {
+  'use strict';
+  var Q = new URLSearchParams(location.search);
+  if (Q.get('kinesis') !== '1') return;
+
+  // ---------- SKELETON ADAPTER (only code that knows raw MP indices) ------
+  var MP = {
+    nose:0,
+    shoulderL:11, shoulderR:12, elbowL:13, elbowR:14, wristL:15, wristR:16,
+    hipL:23, hipR:24, kneeL:25, kneeR:26, ankleL:27, ankleR:28
+  };
+  function J(lms,i){ var p=lms[i]; if(!p) return null;
+    return {x:p.x,y:p.y,z:(p.z==null?0:p.z),v:(p.visibility==null?0:p.visibility)}; }
+  function mid(a,b){ if(!a||!b) return null;
+    return {x:(a.x+b.x)/2,y:(a.y+b.y)/2,z:(a.z+b.z)/2,v:Math.min(a.v,b.v)}; }
+  function knSkeleton(lms){
+    if(!lms) return null;
+    var s={ nose:J(lms,MP.nose),
+      shoulderL:J(lms,MP.shoulderL),shoulderR:J(lms,MP.shoulderR),
+      elbowL:J(lms,MP.elbowL),elbowR:J(lms,MP.elbowR),
+      wristL:J(lms,MP.wristL),wristR:J(lms,MP.wristR),
+      hipL:J(lms,MP.hipL),hipR:J(lms,MP.hipR),
+      kneeL:J(lms,MP.kneeL),kneeR:J(lms,MP.kneeR),
+      ankleL:J(lms,MP.ankleL),ankleR:J(lms,MP.ankleR),
+      source:'mediapipe-blazepose-33' };
+    s.shoulderMid=mid(s.shoulderL,s.shoulderR);
+    s.hipMid=mid(s.hipL,s.hipR);
+    return s;
+  }
+
+  // ---------- geometry on NAMED joints -----------------------------------
+  function visOK(js,thr){ for(var i=0;i<js.length;i++){ if(!js[i]||js[i].v<thr) return false; } return true; }
+  function angleDeg(a,b,c){
+    if(!a||!b||!c) return null;
+    var abx=a.x-b.x,aby=a.y-b.y,cbx=c.x-b.x,cby=c.y-b.y;
+    var m1=Math.hypot(abx,aby),m2=Math.hypot(cbx,cby);
+    if(m1===0||m2===0) return null;
+    var cos=Math.max(-1,Math.min(1,(abx*cbx+aby*cby)/(m1*m2)));
+    return Math.acos(cos)*180/Math.PI;
+  }
+
+  // ---------- exercise profiles ------------------------------------------
+  var PROFILES = {
+    pushup:{
+      label:'Push-up',
+      signal:function(sk){
+        var a=[];
+        if(visOK([sk.shoulderL,sk.elbowL,sk.wristL],0.5)) a.push(angleDeg(sk.shoulderL,sk.elbowL,sk.wristL));
+        if(visOK([sk.shoulderR,sk.elbowR,sk.wristR],0.5)) a.push(angleDeg(sk.shoulderR,sk.elbowR,sk.wristR));
+        if(!a.length) return null;
+        var s=0; for(var i=0;i<a.length;i++) s+=a[i]; return s/a.length;
+      },
+      down:100, up:150, minRepMs:600
+    }
+  };
+  var active='pushup';
+
+  var ovrDown=parseFloat(Q.get('down')), ovrUp=parseFloat(Q.get('up'));
+  function thrDown(){ return isNaN(ovrDown)?PROFILES[active].down:ovrDown; }
+  function thrUp(){   return isNaN(ovrUp)?PROFILES[active].up:ovrUp; }
+
+  var NO_REP_TIMEOUT_MS = 90000; // auto-disarm after 90s with no counted rep
+
+  // ---------- state: session + current set + rep machine -----------------
+  var lastSkeleton=null;
+  var armed=false;
+  var rep={ state:'up', sig:null, lastRepAt:0 };
+  var set={ reps:0, min:Infinity, max:-Infinity, start:0, lastRepWall:0 };
+  var session={ reps:0, sets:0 };
+  var lastSet=null;
+  var autoStopTimer=null;
+
+  function scheduleAutoStop(){
+    if(autoStopTimer) clearTimeout(autoStopTimer);
+    autoStopTimer=setTimeout(function(){
+      if(armed){ note('auto-stop (90s no rep)'); disarmSet(); }
+    }, NO_REP_TIMEOUT_MS);
+  }
+  function clearAutoStop(){ if(autoStopTimer){ clearTimeout(autoStopTimer); autoStopTimer=null; } }
+
+  function armSet(){
+    if(armed) return;
+    armed=true;
+    set={ reps:0, min:Infinity, max:-Infinity, start:performance.now(), lastRepWall:Date.now() };
+    rep.state='up'; rep.lastRepAt=0;
+    scheduleAutoStop();
+    render();
+  }
+  function disarmSet(){
+    if(!armed) return;
+    armed=false; clearAutoStop();
+    session.sets++;
+    var range=(set.max>set.min)?(set.max-set.min):0;
+    var sugD=null,sugU=null;
+    if(range>=25){ sugD=Math.round(set.min+0.25*range); sugU=Math.round(set.max-0.25*range); }
+    lastSet={ reps:set.reps,
+      min:(set.min===Infinity?null:set.min), max:(set.max===-Infinity?null:set.max),
+      dur:(performance.now()-set.start)/1000, sugD:sugD, sugU:sugU, smallRange:(range<25) };
+    render();
+  }
+  function toggleSet(){ armed?disarmSet():armSet(); }
+  function resetAll(){
+    armed=false; clearAutoStop();
+    rep={state:'up',sig:null,lastRepAt:0};
+    set={reps:0,min:Infinity,max:-Infinity,start:0,lastRepWall:0};
+    session={reps:0,sets:0}; lastSet=null; render();
+  }
+
+  function feed(result){
+    var lms=result&&result.landmarks&&result.landmarks[0];
+    var sk=knSkeleton(lms); lastSkeleton=sk;
+    if(!sk){ rep.sig=null; render(); return; }
+    var sig=PROFILES[active].signal(sk);
+    rep.sig=sig;
+    if(armed && sig!=null){
+      if(sig<set.min) set.min=sig;
+      if(sig>set.max) set.max=sig;
+      var now=performance.now();
+      if(rep.state==='up' && sig<=thrDown()){
+        rep.state='down';
+      } else if(rep.state==='down' && sig>=thrUp()){
+        if(now-rep.lastRepAt>=PROFILES[active].minRepMs){
+          set.reps++; session.reps++; rep.lastRepAt=now; set.lastRepWall=Date.now();
+          scheduleAutoStop(); // reset the no-rep timer on every counted rep
+        }
+        rep.state='up';
+      }
+    }
+    render();
+  }
+
+  // ---------- VOICE (on-device, offline) ---------------------------------
+  var voice={ on:false, supported:false, status:'off', lastHeard:'', raw:'',
+              model:null, recognizer:null, audioCtx:null, micStream:null,
+              srcNode:null, procNode:null, loading:false };
+  function note(msg){ voice.lastHeard=msg; render(); }
+
+  function phraseHit(text){
+    var t=(' '+text.toLowerCase()+' ').replace(/[^a-z ]/g,' ');
+    var hasSet = t.indexOf(' set ')>=0 || t.indexOf(' sets ')>=0;
+    var hasStart = t.indexOf(' start ')>=0 || t.indexOf(' begin ')>=0;
+    var hasStop  = t.indexOf(' stop ')>=0 || t.indexOf(' done ')>=0 || t.indexOf(' end ')>=0;
+    if(hasStart && hasStop) return null;      // ambiguous, ignore
+    if(hasStart && hasSet) return 'start';
+    if(hasStop && hasSet)  return 'stop';
+    return null;
+  }
+
+  var lastFire=0;
+  function fire(kind){
+    var now=Date.now();
+    if(now-lastFire < 1200) return;           // re-fire guard
+    if(kind==='start' && !armed){ lastFire=now; note('heard: start set'); armSet(); }
+    else if(kind==='stop' && armed){ lastFire=now; note('heard: stop set'); disarmSet(); }
+  }
+
+  // ---- VOSK engine (route A: lib+model from jsDelivr CDN) --------------
+  // Overridable for testing via ?voskLib= and ?voskModel= .
+  var VOSK_LIB_URL   = Q.get('voskLib')   || 'vendor/vosk/vosk.js';
+  var VOSK_MODEL_URL = Q.get('voskModel') || 'vendor/vosk/vosk-model-small-en-us-0.15.tar.gz';
+  var VOSK_SAMPLE_RATE = 16000;             // Vosk small-en model is 16k
+
+  function loadScript(url){
+    return new Promise(function(resolve,reject){
+      var sc=document.createElement('script');
+      sc.src=url; sc.async=true;
+      sc.onload=function(){ resolve(); };
+      sc.onerror=function(){ reject(new Error('script load failed: '+url)); };
+      document.head.appendChild(sc);
+    });
+  }
+
+  function voiceStart(){
+    if(voice.on || voice.loading) return;
+    voice.loading=true; voice.status='loading lib…'; voice.raw=''; render();
+
+    var libP = (window.Vosk) ? Promise.resolve() : loadScript(VOSK_LIB_URL);
+    libP.then(function(){
+      if(!window.Vosk){ throw new Error('Vosk global missing after lib load'); }
+      voice.status='loading model (~40MB)…'; render();
+      return window.Vosk.createModel(VOSK_MODEL_URL);
+    }).then(function(model){
+      voice.model=model;
+      voice.status='opening mic…'; render();
+      // Small grammar constrains the decoder to our phrases (+[unk] catch-all).
+      var rec=new model.KaldiRecognizer(VOSK_SAMPLE_RATE,
+        JSON.stringify(['start set','stop set','begin set','end set','done set','[unk]']));
+      rec.setWords(true);
+      rec.on('result', function(msg){
+        var txt=(msg && msg.result && msg.result.text) || '';
+        voice.raw=txt||'(empty final)';
+        var hit=phraseHit(txt);
+        if(hit) fire(hit);
+        render();
+      });
+      rec.on('partialresult', function(msg){
+        var txt=(msg && msg.result && msg.result.partial) || '';
+        if(txt) voice.raw='… '+txt;
+        render();
+      });
+      voice.recognizer=rec;
+      return navigator.mediaDevices.getUserMedia({audio:true, video:false});
+    }).then(function(stream){
+      voice.micStream=stream;
+      var AC=window.AudioContext||window.webkitAudioContext;
+      voice.audioCtx=new AC();
+      voice.srcNode=voice.audioCtx.createMediaStreamSource(stream);
+      // ScriptProcessor is deprecated but universally present; fine for a mic tap.
+      var bufSize=4096;
+      voice.procNode=voice.audioCtx.createScriptProcessor(bufSize,1,1);
+      voice.procNode.onaudioprocess=function(ev){
+        if(!voice.on || !voice.recognizer) return;
+        try{ voice.recognizer.acceptWaveform(ev.inputBuffer); }catch(e){}
+      };
+      voice.srcNode.connect(voice.procNode);
+      voice.procNode.connect(voice.audioCtx.destination); // needed for onaudioprocess to fire
+      voice.on=true; voice.loading=false; voice.status='listening (vosk)'; render();
+    }).catch(function(e){
+      voice.loading=false; voice.on=false;
+      voice.status='err: '+(e && (e.message||e.name) || '?'); render();
+    });
+  }
+
+  function voiceStop(){
+    voice.on=false; voice.loading=false;
+    try{ if(voice.procNode){ voice.procNode.disconnect(); voice.procNode.onaudioprocess=null; } }catch(e){}
+    try{ if(voice.srcNode) voice.srcNode.disconnect(); }catch(e){}
+    try{ if(voice.audioCtx) voice.audioCtx.close(); }catch(e){}
+    try{ if(voice.micStream) voice.micStream.getTracks().forEach(function(t){ t.stop(); }); }catch(e){}
+    try{ if(voice.recognizer && voice.recognizer.remove) voice.recognizer.remove(); }catch(e){}
+    voice.procNode=null; voice.srcNode=null; voice.audioCtx=null;
+    voice.micStream=null; voice.recognizer=null;
+    voice.status='off'; render();
+  }
+  function voiceToggle(){ voice.on||voice.loading?voiceStop():voiceStart(); }
+
+  // ---------- panel ------------------------------------------------------
+  var el={};
+  function fmt(x,d){ return (x==null)?'—':(+x).toFixed(d==null?2:d); }
+  function vpair(a,b){ return fmt(a?a.v:null,2)+' / '+fmt(b?b.v:null,2); }
+
+  function buildPanel(){
+    var st=document.createElement('style');
+    st.textContent=
+      '#knPanel{position:fixed;left:10px;top:10px;z-index:99998;background:#171b22;color:#cfd8e3;'
+      +'font:12px/1.4 system-ui,-apple-system,sans-serif;border:1px solid #2b313c;border-radius:10px;'
+      +'padding:10px 12px;min-width:234px;box-shadow:0 6px 20px rgba(0,0,0,.35)}'
+      +'#knPanel h4{margin:0 0 6px;font-size:11px;color:#9fb0c4;letter-spacing:.05em;text-transform:uppercase;'
+      +'display:flex;justify-content:space-between;align-items:center}'
+      +'#knBadge{font-weight:700;padding:1px 7px;border-radius:10px;font-size:10px;letter-spacing:.06em}'
+      +'#knBadge.idle{background:#33210f;color:#e8c46a}#knBadge.armed{background:#123322;color:#7fe0a3}'
+      +'#knPanel .kr{display:flex;justify-content:space-between;gap:12px;margin:2px 0}'
+      +'#knPanel .kr span:last-child{color:#e6edf5;font-variant-numeric:tabular-nums}'
+      +'#knPanel .knreps{font-size:26px;font-weight:700;color:#7fe0a3;line-height:1;margin:5px 0}'
+      +'#knPanel hr{border:0;border-top:1px solid #2b313c;margin:7px 0}'
+      +'#knPanel .knsub{color:#7f8b99;font-size:11px}'
+      +'#knPanel button{margin-top:6px;width:100%;background:#232a34;color:#cfd8e3;border:1px solid #333c48;'
+      +'border-radius:6px;padding:6px;cursor:pointer;font:12px system-ui}'
+      +'#knPanel button:hover{background:#2b333f}'
+      +'#knArm.armed{background:#123322;border-color:#1f6f45;color:#9be9bf}'
+      +'#knArm.idle{background:#2a3340;border-color:#3a556e;color:#bfe0ff}'
+      +'#knVoice.on{background:#10233a;border-color:#2f5c86;color:#bfe0ff}';
+    document.head.appendChild(st);
+
+    var d=document.createElement('div'); d.id='knPanel';
+    d.innerHTML=
+      '<h4><span>KINESIS V5 &middot; read-only</span><span id="knBadge" class="idle">IDLE</span></h4>'
+      +'<div class="kr"><span>Exercise</span><span id="knEx">&mdash;</span></div>'
+      +'<div class="knreps"><span id="knReps">0</span> <span id="knRepsLbl" class="knsub">reps</span></div>'
+      +'<div class="kr knsub"><span>session total</span><span id="knTot">0 reps / 0 sets</span></div>'
+      +'<div class="kr"><span>Phase</span><span id="knState">&mdash;</span></div>'
+      +'<div class="kr"><span>Signal</span><span id="knSig">&mdash;</span></div>'
+      +'<div class="kr knsub"><span>down / up</span><span id="knThr">&mdash;</span></div>'
+      +'<button id="knArm" class="idle">Arm set</button>'
+      +'<button id="knVoice">Voice: off</button>'
+      +'<div class="kr knsub" style="margin-top:5px"><span>voice</span><span id="knVstat">off</span></div>'
+      +'<div class="kr knsub"><span>heard</span><span id="knHeard">&mdash;</span></div>'
+      +'<div class="kr knsub"><span>raw</span><span id="knRaw">&mdash;</span></div>'
+      +'<div id="knLast" class="knsub" style="margin-top:6px"></div>'
+      +'<hr>'
+      +'<div class="kr knsub"><span>adapter</span><span id="knSrc">&mdash;</span></div>'
+      +'<div class="kr knsub"><span>vis el L/R</span><span id="knVel">&mdash;</span></div>'
+      +'<div class="kr knsub"><span>vis wr L/R</span><span id="knVwr">&mdash;</span></div>'
+      +'<button id="knReset">Reset all</button>';
+    document.body.appendChild(d);
+    document.getElementById('knArm').addEventListener('click',toggleSet);
+    document.getElementById('knVoice').addEventListener('click',voiceToggle);
+    document.getElementById('knReset').addEventListener('click',resetAll);
+
+    el.badge=document.getElementById('knBadge');
+    el.ex=document.getElementById('knEx');
+    el.reps=document.getElementById('knReps');
+    el.repsLbl=document.getElementById('knRepsLbl');
+    el.tot=document.getElementById('knTot');
+    el.state=document.getElementById('knState');
+    el.sig=document.getElementById('knSig');
+    el.thr=document.getElementById('knThr');
+    el.arm=document.getElementById('knArm');
+    el.voiceBtn=document.getElementById('knVoice');
+    el.vstat=document.getElementById('knVstat');
+    el.heard=document.getElementById('knHeard');
+    el.raw=document.getElementById('knRaw');
+    el.last=document.getElementById('knLast');
+    el.src=document.getElementById('knSrc');
+    el.vel=document.getElementById('knVel');
+    el.vwr=document.getElementById('knVwr');
+    render();
+  }
+
+  function render(){
+    if(!el.reps) return;
+    var sk=lastSkeleton;
+    el.ex.textContent=PROFILES[active].label;
+    el.badge.textContent=armed?'ARMED':'IDLE';
+    el.badge.className=armed?'armed':'idle';
+    el.arm.textContent=armed?'Stop set':'Arm set';
+    el.arm.className=armed?'armed':'idle';
+    el.reps.textContent=armed?set.reps:(lastSet?lastSet.reps:0);
+    el.repsLbl.textContent=armed?'reps (this set)':'reps (last set)';
+    el.tot.textContent=session.reps+' reps / '+session.sets+' sets';
+    el.state.textContent=rep.state.toUpperCase();
+    el.sig.textContent=(rep.sig==null)?'—':fmt(rep.sig,1)+'°';
+    var ovr=(!isNaN(ovrDown)||!isNaN(ovrUp))?' (url)':'';
+    el.thr.textContent=Math.round(thrDown())+'° / '+Math.round(thrUp())+'°'+ovr;
+
+    el.voiceBtn.textContent='Voice: '+(voice.on?'on':'off');
+    el.voiceBtn.className=voice.on?'on':'';
+    el.vstat.textContent=voice.status;
+    el.heard.textContent=voice.lastHeard||'—';
+    if(el.raw) el.raw.textContent=voice.raw||'—';
+
+    if(!armed && lastSet){
+      var r=lastSet, txt='last set: '+r.reps+' reps · '
+        +(r.min==null?'—':fmt(r.min,0)+'°–'+fmt(r.max,0)+'°')+' · '+fmt(r.dur,0)+'s';
+      if(r.smallRange) txt+=' · range small — do fuller reps';
+      else if(r.sugD!=null) txt+=' · suggest down/up '+r.sugD+'°/'+r.sugU+'°';
+      el.last.textContent=txt;
+    } else { el.last.textContent=''; }
+
+    el.src.textContent=sk?sk.source:'—';
+    el.vel.textContent=sk?vpair(sk.elbowL,sk.elbowR):'—';
+    el.vwr.textContent=sk?vpair(sk.wristL,sk.wristR):'—';
+  }
+
+  // ---------- register tap + hooks ---------------------------------------
+  window.__KINESIS__={ consume:feed, arm:armSet, disarm:disarmSet, toggle:toggleSet,
+                       voice:voiceToggle, reset:resetAll, version:'v5-2026-08-22b' };
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',buildPanel);
+  else buildPanel();
+})();
+</script>
+</body>
+</html>

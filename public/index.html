@@ -364,6 +364,40 @@
   let telemHbLastAt = 0;
   let telemSigprobeSeq = 0;
   // ===== TELEMETRY MODULE END (role latch) ===================================
+  // ===== LOGSTREAM MODULE: state (gym -> localhost session receiver) ==========
+  // Declared here, next to the role latch, for the same reason as TELEM_* above:
+  // the hook inside afdiagFlush() reads it from the very first flush. Gym role
+  // only (telemIsGym). ?logsink= overrides the sink for benching, loopback only.
+  const LOGSINK_URL = (() => {
+    try {
+      const u = new URL(params.get('logsink') || '');
+      if (/^https?:$/.test(u.protocol) && /^(127\.0\.0\.1|localhost|\[::1\])$/.test(u.hostname)) return u.href;
+    } catch (e) {}
+    return 'http://127.0.0.1:4010/log';
+  })();
+  const LOGSINK_TICK_MS = 5000;          // batch interval
+  const LOGSINK_MAX_LINES = 100;         // per POST
+  const LOGSINK_MAX_BYTES = 32768;       // per POST (UTF-8 JSON body)
+  const LOGSINK_POSTS_PER_TICK = 10;     // lets a backlog drain faster than 100 lines / 5s
+  const LOGSINK_QUEUE_MAX = 5000;        // in-memory cap while unreachable -- oldest drop first
+  const LOGSINK_BACKOFF_MIN_MS = 15000;
+  const LOGSINK_BACKOFF_MAX_MS = 60000;
+  const LOGSINK_TIMEOUT_MS = 10000;      // abort a hung POST
+  const LOGSINK_LINGER_MS = 120000;      // keep streaming this long after the last peer leaves
+  const LOGSINK_PREROLL_MS = 120000;     // while idle, hold only the last 2 min (sent when a call starts)
+  const LOGSINK_END_GIVEUP_MS = 600000;  // stop retrying an undelivered end marker after 10 min
+  let logsinkQueue = [];                 // lines not yet confirmed by the receiver
+  let logsinkMode = 'idle';              // 'idle' | 'live' | 'ending'
+  let logsinkLastPeerAt = 0;             // last tick a peer was connected
+  let logsinkEndingSince = 0;
+  let logsinkBusy = false;               // one POST sequence at a time
+  let logsinkNextAt = 0;                 // backoff: no POST before this
+  let logsinkBackoff = 0;
+  let logsinkFailing = false;            // one diagnostic per outage, one per recovery
+  let logsinkFailCount = 0;
+  let logsinkDropped = 0;                // lines dropped by the queue cap (running total)
+  let logsinkDroppedAtFail = 0;
+  // ===== LOGSTREAM MODULE END (state) =========================================
   //  index : { t: invertTilt, p: invertPan, role: display name }
   const AF_ROLE_BY_INDEX = AF_FORCE_MODE ? [
     { t: true, p: true,  role: 'Door' },   // index 0 — launcher pins the door here (pan ON)
@@ -386,7 +420,7 @@
   // away on pan; auto-framing is separately HELD.
   const AF_FORCE_FALLBACK = { t: true, p: false };
   let afInvUnconfirmed = false;  // set true when an unrecognised camera is adopted
-  console.log('[build] index-pingpong 2026-10-24 — inv=' +
+  console.log('[build] index-logstream 2026-10-26 — inv=' +
     (params.get('inv') || '(none)') + (AF_FORCE_MODE ? ' (order-keyed: index0=Door, index1=Rack)' : ''));
 
   // Google's public STUN servers — free, no signup, fine for most home networks.
@@ -1351,6 +1385,7 @@
         renderRemoteCameraButtons(msg.cameras || []);
       } else if (msg.type === 'switch-camera') {
         console.log('[cam-switch] RECEIVED switch-camera deviceId=' + msg.deviceId + ' at ' + new Date().toISOString());
+        try { const i = [...cameraSelect.options].findIndex((o) => o.value === msg.deviceId); afdiag('CAMSWITCH received switch-camera deviceId=' + String(msg.deviceId || '').slice(0, 8) + ' -> ' + (i < 0 ? 'not present here (ignored)' : ((AF_ROLE_BY_INDEX && AF_ROLE_BY_INDEX[i] ? AF_ROLE_BY_INDEX[i].role.toLowerCase() : 'unmapped') + ' (index ' + i + ')' + (cameraSelect.value === msg.deviceId ? ', already active' : '')))); } catch (e) { /* LOGSTREAM MODULE: diagnostic only */ }
         const opt = [...cameraSelect.options].find((o) => o.value === msg.deviceId);
         if (!opt) return; // camera no longer present on this side — ignore
         cameraSelect.value = msg.deviceId;
@@ -1841,6 +1876,7 @@
   function afdiagFlush() {
     try {
       if (!afdiagPending.length) return;
+      try { if (telemIsGym) logsinkEnqueue(afdiagPending); } catch (e2) { /* LOGSTREAM MODULE: must never affect logging */ }
       afdiagBuf = afdiagBuf.concat(afdiagPending);
       afdiagPending = [];
       if (afdiagBuf.length > AFDIAG_MAX_LINES) {
@@ -2008,6 +2044,158 @@
     });
   } catch (e) {}
   // ===== TELEMETRY MODULE END =================================================
+
+  // ===== LOGSTREAM MODULE: gym log lines -> localhost session receiver ========
+  // Gym role only (telemIsGym; the trainer's page never queues or POSTs). Copies
+  // every line afdiagFlush() persists -- the gym's own afdiag() lines and the
+  // [trainer] lines afdiagIngestRemote() adds -- and POSTs {"lines":[...]} to
+  // LOGSINK_URL every 5s while a peer is connected and for 2 min after the last
+  // one leaves, then one final POST with "end":true and silence until a peer
+  // connects again. Observe-only: reads pc/controlChannel state, never writes
+  // to them; every failure is swallowed; its only other output is at most one
+  // afdiag() line per sink outage and one per recovery. To remove: delete this
+  // block, the LOGSTREAM state next to the role latch, the one hook in
+  // afdiagFlush(), and the CAMSWITCH line in the switch-camera handler.
+  // State lives next to the role latch (see LOGSINK_* there).
+
+  function logsinkEnqueue(lines) {
+    if (!telemIsGym) return;
+    for (let i = 0; i < lines.length; i++) logsinkQueue.push(lines[i]);
+    if (logsinkQueue.length > LOGSINK_QUEUE_MAX) {
+      logsinkDropped += logsinkQueue.length - LOGSINK_QUEUE_MAX;
+      logsinkQueue = logsinkQueue.slice(logsinkQueue.length - LOGSINK_QUEUE_MAX); // keep the newest
+    }
+  }
+
+  function logsinkPeerUp() {
+    return !!((pc && pc.connectionState === 'connected') ||
+              (controlChannel && controlChannel.readyState === 'open'));
+  }
+
+  // Oldest-first batch within the line/byte caps (newestFirst for pagehide).
+  function logsinkTakeBatch(newestFirst) {
+    const enc = new TextEncoder();
+    const out = [];
+    let bytes = 24; // {"lines":[],"end":true}
+    const n = logsinkQueue.length;
+    for (let k = 0; k < n && out.length < LOGSINK_MAX_LINES; k++) {
+      const line = logsinkQueue[newestFirst ? n - 1 - k : k];
+      const b = enc.encode(JSON.stringify(line)).length + 1;
+      if (out.length && bytes + b > LOGSINK_MAX_BYTES) break;
+      out.push(line);
+      bytes += b;
+    }
+    return newestFirst ? out.reverse() : out;
+  }
+
+  function logsinkPost(lines, end, keepalive) {
+    const body = JSON.stringify(end ? { lines, end: true } : { lines });
+    // keepalive (pagehide) uses text/plain so it needs no preflight; the receiver parses JSON either way
+    const ctl = (!keepalive && typeof AbortController === 'function') ? new AbortController() : null;
+    const timer = ctl ? setTimeout(() => { try { ctl.abort(); } catch (e) {} }, LOGSINK_TIMEOUT_MS) : null;
+    return fetch(LOGSINK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': keepalive ? 'text/plain' : 'application/json' },
+      body,
+      keepalive: !!keepalive,
+      credentials: 'omit',
+      cache: 'no-store',
+      signal: ctl ? ctl.signal : undefined,
+    }).then((r) => {
+      if (timer) clearTimeout(timer);
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+    }, (e) => {
+      if (timer) clearTimeout(timer);
+      throw e;
+    });
+  }
+
+  function logsinkOk() {
+    if (logsinkFailing) {
+      afdiag('LOGSINK recovered after ' + logsinkFailCount + ' failed attempt(s); ' +
+        (logsinkDropped - logsinkDroppedAtFail) + ' line(s) dropped while down');
+    }
+    logsinkFailing = false;
+    logsinkFailCount = 0;
+    logsinkBackoff = 0;
+    logsinkNextAt = 0;
+  }
+
+  function logsinkFail(e) {
+    logsinkFailCount++;
+    logsinkBackoff = logsinkBackoff ? Math.min(logsinkBackoff * 2, LOGSINK_BACKOFF_MAX_MS) : LOGSINK_BACKOFF_MIN_MS;
+    logsinkNextAt = Date.now() + logsinkBackoff;
+    if (!logsinkFailing) {
+      logsinkFailing = true;
+      logsinkDroppedAtFail = logsinkDropped;
+      afdiag('LOGSINK unreachable (' + String((e && e.message) || e).slice(0, 80) + ') — queue=' +
+        logsinkQueue.length + ', retrying every ' + (LOGSINK_BACKOFF_MIN_MS / 1000) + '-' + (LOGSINK_BACKOFF_MAX_MS / 1000) + 's');
+    }
+  }
+
+  async function logsinkTick() {
+    try {
+      if (!telemIsGym || logsinkBusy) return;
+      const now = Date.now();
+      if (logsinkPeerUp()) {
+        logsinkLastPeerAt = now;
+        logsinkMode = 'live';
+      } else if (logsinkMode === 'live' && now - logsinkLastPeerAt >= LOGSINK_LINGER_MS) {
+        logsinkMode = 'ending';
+        logsinkEndingSince = now;
+      } else if (logsinkMode === 'ending' && now - logsinkEndingSince >= LOGSINK_END_GIVEUP_MS) {
+        logsinkMode = 'idle'; // receiver never took the end marker -- go quiet anyway
+      }
+      if (logsinkMode === 'idle') {
+        // no call: keep only a short pre-roll so the next call's log starts with context
+        const cutoff = now - LOGSINK_PREROLL_MS;
+        let i = 0;
+        while (i < logsinkQueue.length) {
+          const ms = telemLineTimestampMs(logsinkQueue[i]);
+          if (ms === null || ms >= cutoff) break;
+          i++;
+        }
+        if (i) logsinkQueue = logsinkQueue.slice(i);
+        return;
+      }
+      if (now < logsinkNextAt) return;
+      logsinkBusy = true;
+      try {
+        for (let n = 0; n < LOGSINK_POSTS_PER_TICK; n++) {
+          const lines = logsinkTakeBatch(false);
+          const end = logsinkMode === 'ending' && lines.length === logsinkQueue.length;
+          if (!lines.length && !end) break;
+          const droppedBefore = logsinkDropped;
+          await logsinkPost(lines, end, false);
+          // the cap may have trimmed the front of the queue while the POST was in flight
+          const sent = Math.max(0, lines.length - (logsinkDropped - droppedBefore));
+          logsinkQueue = logsinkQueue.slice(sent);
+          logsinkOk();
+          if (end) { logsinkMode = 'idle'; break; }
+        }
+      } catch (e) {
+        logsinkFail(e);
+      } finally {
+        logsinkBusy = false;
+      }
+    } catch (e) { /* the log stream must never affect the call */ }
+  }
+
+  function logsinkPagehide() {
+    try {
+      if (!telemIsGym || logsinkMode === 'idle') return;
+      afdiagFlush(); // pull in the newest lines now; afdiagFlush's own pagehide listener runs later
+      const lines = logsinkTakeBatch(true);
+      logsinkPost(lines, true, true).catch(() => {});
+      logsinkMode = 'idle';
+    } catch (e) { /* never affect unload */ }
+  }
+
+  try {
+    setInterval(logsinkTick, LOGSINK_TICK_MS);
+    window.addEventListener('pagehide', logsinkPagehide);
+  } catch (e) {}
+  // ===== LOGSTREAM MODULE END =================================================
 
   // ===== PINGPONG MODULE: app-level signaling liveness =========================
   // The server's protocol-level ws pings prove the socket to the SERVER, not to
@@ -2183,7 +2371,7 @@
   try { window.addEventListener('pagehide', afdiagFlush); } catch (e) {}
   try { window.addEventListener('beforeunload', afdiagFlush); } catch (e) {}
 
-  afdiag('PAGE LOAD — [build] index-pingpong 2026-10-24 — inv=' +
+  afdiag('PAGE LOAD — [build] index-logstream 2026-10-26 — inv=' +
     (params.get('inv') || '(none)') +
     (AF_FORCE_MODE ? ' (order-keyed: index0=Door, index1=Rack)' : ''));
   // ===== AF DIAGNOSTIC LOGGER: JS END =======================================

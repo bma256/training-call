@@ -420,7 +420,7 @@
   // away on pan; auto-framing is separately HELD.
   const AF_FORCE_FALLBACK = { t: true, p: false };
   let afInvUnconfirmed = false;  // set true when an unrecognised camera is adopted
-  console.log('[build] index-logstream 2026-10-26 — inv=' +
+  console.log('[build] index-doorhome 2026-10-27 — inv=' +
     (params.get('inv') || '(none)') + (AF_FORCE_MODE ? ' (order-keyed: index0=Door, index1=Rack)' : ''));
 
   // Google's public STUN servers — free, no signup, fine for most home networks.
@@ -1801,12 +1801,20 @@
   const AF_LOCK_N = 3;              // consecutive good-visibility frames required for a "solid lock"
   const AF_TILT_MAX_DOWN = 70;      // ° — soft cap on top of the camera's own hardware limit (both cameras). Door: positive tilt = down.
   const AF_LS_HOME = 'afHome_v1';   // per-deviceId saved home, same pattern as AF_LS_INV
-  const AF_HOME_TILT_DEFAULT = 30;  // ° down — DOOR-ONLY built-in default (door: positive tilt = down)
+  const AF_HOME_TILT_DEFAULT = 18;  // ° down — DOOR-ONLY built-in default (door: positive tilt = down). 30 -> 18 (2026-10-27): working framing is 13-19°, 30 showed only the lower torso.
   const AF_HOME_PAN_DEFAULT = 0;    // ° — DOOR-ONLY built-in default
   const AF_HOME_TILT_RACK_DEFAULT = 32;  // ° — RACK-ONLY built-in default
   const AF_HOME_PAN_RACK_DEFAULT = -17;  // ° — RACK-ONLY built-in default
   // Door and rack each get a built-in default; unrecognised/unforced cameras
   // fall back to literal 0/0, set inside afLoadHome() below.
+  // DOORHOME (2026-10-27): soft start after the lock that follows a HOME
+  // recovery -- hold with no drive, then one-third steps, then a linear
+  // ramp back to full steps. Stops the full-step chase that lost the target
+  // at the frame edge and re-triggered HOME.
+  const AF_SOFT_HOLD_MS = 1000;     // no drive for this long after the lock
+  const AF_SOFT_SLOW_MS = 2000;     // then steps capped at AF_SOFT_MIN for this long
+  const AF_SOFT_RAMP_MS = 2000;     // then a linear ramp from AF_SOFT_MIN to full
+  const AF_SOFT_MIN = 1 / 3;
 
   // v13 validated defaults, carried forward verbatim from the bench.
   const AF_DEFAULTS = {
@@ -1826,6 +1834,10 @@
   // AFFIX: solid-lock + HOME state, replacing the old afLostSince/afRecentred pair.
   let afSolidCount = 0, afLocked = false, afLastLockedAt = 0, afHomed = false, afHadLms = false;
   let afHomeTilt = 0, afHomePan = 0; // resolved per-camera by afLoadHome() -- 0/0 until then
+  // DOORHOME: afSoftArmed is set only by a HOME recovery; the next solid lock
+  // consumes it and starts the soft-start clock at afSoftAt (0 = inactive).
+  // A plain lock loss leaves both alone, so a flicker never cancels a soft start.
+  let afSoftArmed = false, afSoftAt = 0, afSoftPhase = '';
   let afPanelOpen = false;
   let afLastResult = null;
 
@@ -2371,7 +2383,7 @@
   try { window.addEventListener('pagehide', afdiagFlush); } catch (e) {}
   try { window.addEventListener('beforeunload', afdiagFlush); } catch (e) {}
 
-  afdiag('PAGE LOAD — [build] index-logstream 2026-10-26 — inv=' +
+  afdiag('PAGE LOAD — [build] index-doorhome 2026-10-27 — inv=' +
     (params.get('inv') || '(none)') +
     (AF_FORCE_MODE ? ' (order-keyed: index0=Door, index1=Rack)' : ''));
   // ===== AF DIAGNOSTIC LOGGER: JS END =======================================
@@ -2921,6 +2933,7 @@
   }
   function afGoHome() {
     if (!afTrack || !afCaps) return;
+    try { afdiag('AFPOS home tT=' + afHomeTilt.toFixed(1) + ' tP=' + afHomePan.toFixed(1) + ' tilt=' + (afCurTilt / AF_U).toFixed(1) + ' pan=' + (afCurPan / AF_U).toFixed(1)); } catch (e2) {}
     if (afCaps.tilt) afQueue('tilt', afClamp('tilt', afHomeTilt * AF_U));
     if (afCaps.pan) afQueue('pan', afClamp('pan', afHomePan * AF_U));
     afSmX = afSmY = null;
@@ -3064,6 +3077,42 @@
     return n ? s / n : null;
   }
   const afEma = (prev, val, a) => (prev === null ? val : prev + a * (val - prev));
+  // DOORHOME: position telemetry for the AFPOS log lines. Torso height is the
+  // vertical shoulder-to-hip distance as a fraction of frame height (null when
+  // either pair is not visible). Log-only -- the drive never reads these.
+  const afF3 = (v) => (v === null || v === undefined ? 'na' : v.toFixed(3));
+  const afS3 = (v) => (v === null || v === undefined ? 'na' : (v >= 0 ? '+' : '') + v.toFixed(3));
+  // raw = true (loss line only): average all four torso landmarks regardless of
+  // visibility, so a low-visibility loss still logs where the body was.
+  function afPosStr(lms, raw) {
+    if (!lms) return 'lms=none';
+    const avg = raw ? (l, idx, key) => {
+      let s = 0, n = 0;
+      idx.forEach((i) => { const p = l[i]; if (p) { s += p[key]; n++; } });
+      return n ? s / n : null;
+    } : afAvg;
+    const cX = avg(lms, AF_TORSO, 'x'), cY = avg(lms, AF_TORSO, 'y');
+    const sY = avg(lms, [11, 12], 'y'), hY = avg(lms, [23, 24], 'y');
+    const th = (sY === null || hY === null) ? null : hY - sY;
+    const vs = afVisStats(lms);
+    return 'cx=' + afF3(cX) + ' cy=' + afF3(cY) + ' th=' + afF3(th) + ' vmin=' + (vs ? vs.min.toFixed(2) : 'na');
+  }
+  // DOORHOME: soft-start step scale. 0 = hold (no drive), AF_SOFT_MIN..1 after.
+  function afSoftScale(now) {
+    if (!afSoftAt) return 1;
+    const t = now - afSoftAt;
+    let s, ph;
+    if (t < AF_SOFT_HOLD_MS) { s = 0; ph = 'hold'; }
+    else if (t < AF_SOFT_HOLD_MS + AF_SOFT_SLOW_MS) { s = AF_SOFT_MIN; ph = 'slow'; }
+    else if (t < AF_SOFT_HOLD_MS + AF_SOFT_SLOW_MS + AF_SOFT_RAMP_MS) {
+      s = AF_SOFT_MIN + (1 - AF_SOFT_MIN) * (t - AF_SOFT_HOLD_MS - AF_SOFT_SLOW_MS) / AF_SOFT_RAMP_MS; ph = 'ramp';
+    } else { s = 1; ph = 'full'; afSoftAt = 0; }
+    if (ph !== afSoftPhase) {
+      afSoftPhase = ph;
+      try { afdiag('AFPOS soft phase=' + ph + ' t=' + Math.round(t)); } catch (e2) {}
+    }
+    return s;
+  }
   function afVisStats(lms) {
     let s = 0, n = 0, mn = 1;
     for (const i of AF_TORSO) {
@@ -3105,12 +3154,16 @@
       if (!afLocked && afSolidCount >= AF_LOCK_N) {
         afLocked = true;
         try { afdiag('solid lock ACQUIRED (' + AF_LOCK_N + ' consecutive good frames)'); } catch (e2) {}
+        // DOORHOME: the lock after a HOME recovery starts the soft-start clock.
+        if (afSoftArmed) { afSoftArmed = false; afSoftAt = now; afSoftPhase = ''; }
+        try { afdiag('AFPOS lock ' + afPosStr(lms) + ' tilt=' + (afCurTilt / AF_U).toFixed(1) + ' pan=' + (afCurPan / AF_U).toFixed(1) + ' soft=' + (afSoftAt ? 'on' : 'off')); } catch (e2) {}
       }
     } else {
       afSolidCount = 0;
       if (afLocked) {
         afLocked = false;
         try { afdiag('solid lock LOST (' + (lms ? 'low visibility' : 'no landmarks') + ')'); } catch (e2) {}
+        try { afdiag('AFPOS loss ' + afPosStr(lms, true) +' sx=' + afF3(afSmX) + ' sy=' + afF3(afSmY) + ' tilt=' + (afCurTilt / AF_U).toFixed(1) + ' pan=' + (afCurPan / AF_U).toFixed(1)); } catch (e2) {}
       }
     }
 
@@ -3126,7 +3179,7 @@
       // PINGPONG BUILD (B): checked here, not only in afQueue, so a hidden page
       // does not consume afHomed -- HOME stays armed and fires once visible.
       if (afT.reacq > 0 && !afHomed && now - afLastLockedAt > afT.reacq * 1000 && !afPtzHiddenSkip()) {
-        afHomed = true; afM.lost++;
+        afHomed = true; afM.lost++; afSoftArmed = true; // DOORHOME: the lock at HOME soft-starts
         afLog('No solid lock for ' + afT.reacq + 's — going HOME (loss #' + afM.lost + ').', 'af-warn');
         try { afdiag('HOME recovery triggered (no solid lock for ' + afT.reacq + 's, loss #' + afM.lost + ')'); } catch (e2) {}
         afSyncActualPosition();
@@ -3141,28 +3194,39 @@
     afSmX = afEma(afSmX, cX, afT.smooth);
     afSmY = afEma(afSmY, cY, afT.smooth);
     afLastCmd = now;
+    // DOORHOME: during the hold the EMA above keeps settling, but nothing moves.
+    const soft = afSoftScale(now);
+    if (soft === 0) return;
+    let dT = 0, dP = 0;
+    const errY = afSmY - afT.torso, errX = afSmX - 0.5;
 
     if (afCaps.tilt) {
-      const errY = afSmY - afT.torso;
       const mag = Math.abs(errY) - afT.vDead;
       if (mag > 0) {
         let d = -Math.sign(errY) * mag * afT.tGain;
         if (afT.invT) d = -d;
-        const stepU = afT.stepT * AF_U;
+        const stepU = afT.stepT * AF_U * soft;
         d = Math.max(-stepU, Math.min(stepU, d));
-        if (Math.abs(d) >= AF_MIN_CMD) afQueue('tilt', afClamp('tilt', afCurTilt + d));
+        if (Math.abs(d) >= AF_MIN_CMD) { dT = d; afQueue('tilt', afClamp('tilt', afCurTilt + d)); }
       }
     }
     if (afT.panOn && afCaps.pan) {
-      const errX = afSmX - 0.5;
       const mag = Math.abs(errX) - afT.hDead;
       if (mag > 0) {
         let d = Math.sign(errX) * mag * afT.pGain;
         if (afT.invP) d = -d;
-        const stepU = afT.stepP * AF_U;
+        const stepU = afT.stepP * AF_U * soft;
         d = Math.max(-stepU, Math.min(stepU, d));
-        if (Math.abs(d) >= AF_MIN_CMD) afQueue('pan', afClamp('pan', afCurPan + d));
+        if (Math.abs(d) >= AF_MIN_CMD) { dP = d; afQueue('pan', afClamp('pan', afCurPan + d)); }
       }
+    }
+    if (dT || dP) {
+      try {
+        afdiag('AFPOS move ' + afPosStr(lms) + ' sx=' + afF3(afSmX) + ' sy=' + afF3(afSmY) +
+          ' errX=' + afS3(errX) + ' errY=' + afS3(errY) +
+          ' dT=' + (dT >= 0 ? '+' : '') + (dT / AF_U).toFixed(1) + ' dP=' + (dP >= 0 ? '+' : '') + (dP / AF_U).toFixed(1) +
+          ' soft=' + soft.toFixed(2) + ' tilt=' + (afCurTilt / AF_U).toFixed(1) + ' pan=' + (afCurPan / AF_U).toFixed(1));
+      } catch (e2) {}
     }
   }
 

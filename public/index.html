@@ -1734,6 +1734,44 @@
     popoutUpdateStream();
   }
 
+  // SECOND-SCREEN TEST BUILD: when Chromium's Window Management API is allowed
+  // and a screen other than this window's own exists (the Roku TV), open the
+  // popout filling that screen instead of an 800x600 window. Document PiP
+  // windows cannot be placed or sized, so this path uses window.open. If
+  // anything here fails, the original behaviour below runs unchanged.
+  // First use shows a one-time "manage windows on all your displays" prompt;
+  // after Allow, click Pop Out a second time (the prompt uses up the click).
+  async function popoutFindOtherScreen() {
+    if (!('getScreenDetails' in window)) return { screen: null, askedNow: false };
+    let askedNow = false;
+    try {
+      const st = await navigator.permissions.query({ name: 'window-management' });
+      askedNow = (st.state === 'prompt');
+    } catch (e) {}
+    try {
+      const d = await window.getScreenDetails();
+      const cur = d.currentScreen;
+      const other = d.screens.find(s => s.left !== cur.left || s.top !== cur.top) || null;
+      return { screen: other, askedNow };
+    } catch (e) {
+      return { screen: null, askedNow: false };
+    }
+  }
+
+  function popoutAddFullscreen(w, scr) {
+    const d = w.document;
+    const toggle = () => {
+      if (d.fullscreenElement) { d.exitFullscreen().catch(() => {}); return; }
+      const el = d.documentElement;
+      el.requestFullscreen({ screen: scr }).catch(() => {
+        el.requestFullscreen().catch(() => {});
+      });
+    };
+    d.addEventListener('click', toggle);
+    d.addEventListener('keydown', (e) => { if (e.key === 'f' || e.key === 'F') toggle(); });
+    try { toggle(); } catch (e) {}   // may be refused without a click in the popup
+  }
+
   async function openSelfViewPopout() {
     if (popoutWindow && !popoutWindow.closed) {
       popoutWindow.focus();
@@ -1742,6 +1780,27 @@
     if (window.documentPictureInPicture && documentPictureInPicture.window) {
       try { documentPictureInPicture.window.focus(); } catch (e) {}
       return;
+    }
+
+    const found = await popoutFindOtherScreen();
+    if (found.askedNow) {
+      pipSetBadge('second-screen permission asked - click Pop Out again', false);
+      return;
+    }
+    if (found.screen) {
+      const sc = found.screen;
+      const feat = 'popup=yes,left=' + sc.availLeft + ',top=' + sc.availTop +
+        ',width=' + sc.availWidth + ',height=' + sc.availHeight;
+      const w = window.open('', 'selfViewPopout', feat);
+      if (w) {
+        popoutWindow = w;
+        pipBuildVideoIn(w.document);
+        popoutAddFullscreen(w, sc);
+        w.addEventListener('pagehide', () => { popoutVideoEl = null; });
+        pipSetBadge('window.open on other screen ' + sc.width + 'x' + sc.height +
+          ' (click or F in popout = fullscreen)', true);
+        return;
+      }
     }
 
     if ('documentPictureInPicture' in window) {

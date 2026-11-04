@@ -420,7 +420,7 @@
   // away on pan; auto-framing is separately HELD.
   const AF_FORCE_FALLBACK = { t: true, p: false };
   let afInvUnconfirmed = false;  // set true when an unrecognised camera is adopted
-  console.log('[build] index-doorhome 2026-10-27 — inv=' +
+  console.log('[build] index-paceclock 2026-11-02 — inv=' +
     (params.get('inv') || '(none)') + (AF_FORCE_MODE ? ' (order-keyed: index0=Door, index1=Rack)' : ''));
 
   // Google's public STUN servers — free, no signup, fine for most home networks.
@@ -1703,6 +1703,10 @@
   // Detection loop reads on-page #local; we do NOT move it. A separate lightweight
   // <video> goes into the PiP surface on the same localStream, so detection is
   // untouched; the only variable under test is PiP surface vs window.open decode.
+  const PIP_BADGE_OK_MS = 10000;     // success clears soon so it stops covering the Pop Out button
+  const PIP_BADGE_FAIL_MS = 60000;   // failures stay up longer so they can be read
+  let pipBadgeTimer = null;
+
   function pipSetBadge(text, ok) {
     let b = document.getElementById('pipPathBadge');
     if (!b) {
@@ -1716,6 +1720,9 @@
     b.textContent = 'popout path: ' + text;
     b.style.borderColor = ok ? '#2e9e5b' : '#a55';
     b.style.color = ok ? '#dff5e7' : '#f4d0d0';
+    b.style.display = '';
+    clearTimeout(pipBadgeTimer);
+    pipBadgeTimer = setTimeout(() => { b.style.display = 'none'; }, ok ? PIP_BADGE_OK_MS : PIP_BADGE_FAIL_MS);
   }
 
   function pipBuildVideoIn(doc) {
@@ -1732,6 +1739,7 @@
     doc.body.appendChild(video);
     popoutVideoEl = video;
     popoutUpdateStream();
+    paceClockBuildIn(doc, video);
   }
 
   // SECOND-SCREEN TEST BUILD: when Chromium's Window Management API is allowed
@@ -1760,16 +1768,30 @@
 
   function popoutAddFullscreen(w, scr) {
     const d = w.document;
+    // The attempt made as the popout opens has no gesture in the popup, so its
+    // refusal is expected: it is logged but does not put a failure on the badge.
+    let opening = true;
+    const fsFailed = (what, e, auto) => {
+      const name = (e && e.name) || 'err';
+      afdiag('POPOUT FULLSCREEN ' + what + ' failed' + (auto ? ' (attempt at open)' : '') + ': ' + name);
+      if (!auto) pipSetBadge('fullscreen ' + what + ' failed: ' + name, false);
+    };
     const toggle = () => {
-      if (d.fullscreenElement) { d.exitFullscreen().catch(() => {}); return; }
+      const auto = opening;
+      if (d.fullscreenElement) { d.exitFullscreen().catch((e) => { fsFailed('exit', e, auto); }); return; }
       const el = d.documentElement;
-      el.requestFullscreen({ screen: scr }).catch(() => {
-        el.requestFullscreen().catch(() => {});
+      el.requestFullscreen({ screen: scr }).catch((e) => {
+        afdiag('POPOUT FULLSCREEN request on screen refused: ' + ((e && e.name) || 'err') + ' - retrying without screen');
+        el.requestFullscreen().catch((e2) => { fsFailed('request', e2, auto); });
       });
     };
+    d.addEventListener('fullscreenchange', () => {
+      afdiag('POPOUT FULLSCREEN ' + (d.fullscreenElement ? 'entered' : 'exited'));
+    });
     d.addEventListener('click', toggle);
     d.addEventListener('keydown', (e) => { if (e.key === 'f' || e.key === 'F') toggle(); });
     try { toggle(); } catch (e) {}   // may be refused without a click in the popup
+    opening = false;
   }
 
   async function openSelfViewPopout() {
@@ -1829,6 +1851,176 @@
   if (popoutBtn) {
     popoutBtn.addEventListener('click', () => { openSelfViewPopout(); });
   }
+  // ===== PACE CLOCK MODULE ===============================================
+  // Free-running four-hand pace clock plus session total, shown ONLY inside the
+  // popout built by pipBuildVideoIn(). Adds nothing to the main window. The
+  // hands are one SVG group on a 60 s CSS animation; a timer on the popout's own
+  // window (the opener can be throttled) re-syncs the phase and the readout.
+  // The main-page timer only keeps session state current before a popout exists.
+  // Delete this block and the paceClockBuildIn() line in pipBuildVideoIn() to
+  // remove the feature.
+
+  // ----- PACECLOCK PURE START (test/paceclock.test.js extracts this part) -----
+  const GAP_MS = 30 * 60 * 1000;     // nobody in the call for longer than this ends the session
+  const PACECLOCK_PERIOD_MS = 60000;
+
+  function paceClockValid(state) {
+    return !!state && Number.isFinite(state.startAt) && Number.isFinite(state.lastUpAt);
+  }
+
+  // Returns the next {startAt, lastUpAt}, or null for no session. Returns the
+  // same object when nothing changed, so the caller can skip the storage write.
+  function paceClockStep(state, nowMs, peerUp) {
+    const live = paceClockValid(state) ? state : null;
+    const expired = !!live && (nowMs - live.lastUpAt > GAP_MS);
+    if (peerUp) {
+      return { startAt: (live && !expired) ? live.startAt : nowMs, lastUpAt: nowMs };
+    }
+    return expired ? null : live;
+  }
+
+  function paceClockParse(raw) {
+    try {
+      const o = JSON.parse(raw);
+      return paceClockValid(o) ? { startAt: o.startAt, lastUpAt: o.lastUpAt } : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function paceClockFormat(state, nowMs) {
+    const total = paceClockValid(state) ? Math.max(0, Math.floor((nowMs - state.startAt) / 1000)) : 0;
+    const two = (n) => String(n).padStart(2, '0');
+    return Math.floor(total / 3600) + ':' + two(Math.floor(total / 60) % 60) + ':' + two(total % 60);
+  }
+
+  // Signed shortest distance (ms) from the animation's position to the wall clock.
+  function paceClockDrift(currentTime, nowMs) {
+    let d = (((nowMs - currentTime) % PACECLOCK_PERIOD_MS) + PACECLOCK_PERIOD_MS) % PACECLOCK_PERIOD_MS;
+    if (d > PACECLOCK_PERIOD_MS / 2) d -= PACECLOCK_PERIOD_MS;
+    return d;
+  }
+
+  function paceClockPos(raw) {
+    return ['right', 'left', 'top', 'bottom', 'overlay'].includes(raw) ? raw : 'overlay';
+  }
+
+  // ?clocksize= clock width as a percentage of the popout width: 5-40, default 15.
+  function paceClockSize(raw) {
+    if (typeof raw !== 'string' || !/^\s*-?\d+(\.\d+)?\s*$/.test(raw)) return 15;
+    return Math.min(40, Math.max(5, Number(raw)));
+  }
+
+  // vw units follow the popout's own width, including fullscreen and resizes.
+  // Overlay sets no rule on the video, so it keeps its full-window layout.
+  function paceClockCss(pos, size) {
+    const s = size + 'vw';
+    const side = '#popoutVideo{flex:1 1 0;width:auto;min-width:0;min-height:0;}' +
+      '#paceClockPanel{flex:0 0 ' + s + ';}#paceClockSvg{width:100%;max-height:100%;}';
+    const stack = '#popoutVideo{flex:1 1 0;height:auto;min-width:0;min-height:0;}' +
+      '#paceClockPanel{flex:0 0 ' + s + ';min-height:0;}#paceClockSvg{height:100%;max-width:100%;}';
+    if (pos === 'right') return 'body{display:flex;flex-direction:row;}' + side;
+    if (pos === 'left') return 'body{display:flex;flex-direction:row-reverse;}' + side;
+    if (pos === 'bottom') return 'body{display:flex;flex-direction:column;}' + stack;
+    if (pos === 'top') return 'body{display:flex;flex-direction:column-reverse;}' + stack;
+    return '#paceClockPanel{position:fixed;top:1vw;right:1vw;z-index:1;width:' + s + ';height:' + s + ';' +
+      'background:rgba(0,0,0,0.7);border-radius:50%;}#paceClockSvg{width:100%;height:100%;}';
+  }
+  // ----- PACECLOCK PURE END ---------------------------------------------------
+
+  const LS_PACE_CLOCK = 'trainingCall:sessionStartAt';
+  const PACECLOCK_RESYNC_MS = 50;    // smaller drift is left alone so the sweep never hitches
+  let paceClockState = null;
+  try { paceClockState = paceClockParse(localStorage.getItem(LS_PACE_CLOCK)); } catch (e) {}
+
+  function paceClockTick() {
+    const next = paceClockStep(paceClockState, Date.now(), logsinkPeerUp());
+    if (next === paceClockState) return;
+    paceClockState = next;
+    try {
+      if (next) localStorage.setItem(LS_PACE_CLOCK, JSON.stringify(next));
+      else localStorage.removeItem(LS_PACE_CLOCK);
+    } catch (e) {}
+  }
+
+  setInterval(paceClockTick, 1000);
+
+  function paceClockSvg() {
+    const tick = (a, r1, w) =>
+      '<line x1="500" y1="' + (500 - r1) + '" x2="500" y2="5" stroke="#fff" stroke-width="' + w +
+      '" transform="rotate(' + a + ' 500 500)"/>';
+    let ticks = '';
+    for (let s = 0; s < 60; s++) {
+      const a = s * 6;
+      if (s % 15 === 0) ticks += tick(a, 425, 14);
+      else if (s % 5 === 0) ticks += tick(a, 450, 8);
+      else ticks += tick(a, 475, 3);
+    }
+    const num = (text, x, y) =>
+      '<text x="' + x + '" y="' + y + '" text-anchor="middle" dominant-baseline="central" fill="#fff" ' +
+      'font-family="Arial,Helvetica,sans-serif" font-weight="700" font-size="92">' + text + '</text>';
+    const hand = (a) =>
+      '<line x1="500" y1="500" x2="500" y2="75" stroke="#ffd400" stroke-width="14" stroke-linecap="round" ' +
+      'transform="rotate(' + a + ' 500 500)"/>';
+    return '<svg id="paceClockSvg" viewBox="0 0 1000 1000" xmlns="http://www.w3.org/2000/svg">' +
+      ticks +
+      num('60', 500, 140) + num('15', 860, 500) + num('30', 500, 860) + num('45', 140, 500) +
+      '<g id="paceClockHands">' + hand(0) + hand(90) + hand(180) + hand(270) + '</g>' +
+      '<circle cx="500" cy="500" r="165" fill="#111" stroke="#555" stroke-width="6"/>' +
+      '<text id="paceClockReadout" x="500" y="500" text-anchor="middle" dominant-baseline="central" fill="#fff" ' +
+      'font-family="Arial,Helvetica,sans-serif" font-weight="700" font-size="68" ' +
+      'style="font-variant-numeric:tabular-nums">0:00:00</text>' +
+      '</svg>';
+  }
+
+  // Called once per popout. Never lets a clock failure stop the popout itself.
+  function paceClockBuildIn(doc, video) {
+    try {
+      const win = doc.defaultView;
+      // window.open() reuses a named popout left over from before an opener
+      // reload, so clear what the previous build put in it.
+      if (win.__paceClockTimer) win.clearInterval(win.__paceClockTimer);
+      ['#paceClockPanel', '#paceClockStyle'].forEach((sel) => {
+        const old = doc.querySelector(sel);
+        if (old) old.remove();
+      });
+      doc.querySelectorAll('video').forEach((v) => { if (v !== video) v.remove(); });
+
+      const style = doc.createElement('style');
+      style.id = 'paceClockStyle';
+      style.textContent =
+        '#paceClockPanel{display:flex;align-items:center;justify-content:center;background:#000;pointer-events:none;}' +
+        '#paceClockSvg{display:block;aspect-ratio:1/1;}' +
+        '#paceClockHands{transform-origin:500px 500px;will-change:transform;' +
+        'animation:paceClockSweep 60s linear infinite;}' +
+        '@keyframes paceClockSweep{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}' +
+        paceClockCss(paceClockPos(params.get('clockpos')), paceClockSize(params.get('clocksize')));
+      doc.head.appendChild(style);
+
+      const panel = doc.createElement('div');
+      panel.id = 'paceClockPanel';
+      panel.innerHTML = paceClockSvg();
+      doc.body.appendChild(panel);
+
+      const hands = doc.getElementById('paceClockHands');
+      const readout = doc.getElementById('paceClockReadout');
+      const anim = hands.getAnimations()[0];
+      if (anim) anim.currentTime = Date.now() % PACECLOCK_PERIOD_MS;
+
+      const sync = () => {
+        paceClockTick();
+        const now = Date.now();
+        readout.textContent = paceClockFormat(paceClockState, now);
+        if (anim && (anim.currentTime === null ||
+            Math.abs(paceClockDrift(anim.currentTime, now)) > PACECLOCK_RESYNC_MS)) {
+          anim.currentTime = now % PACECLOCK_PERIOD_MS;
+        }
+      };
+      sync();
+      win.__paceClockTimer = win.setInterval(sync, 1000);
+    } catch (e) {}
+  }
+  // ===== PACE CLOCK MODULE END ===========================================
   // ===== SELF-VIEW POPOUT MODULE END =====================================
 
   // ===== AUTO-FRAME MODULE: JS START =====================================
@@ -2442,7 +2634,7 @@
   try { window.addEventListener('pagehide', afdiagFlush); } catch (e) {}
   try { window.addEventListener('beforeunload', afdiagFlush); } catch (e) {}
 
-  afdiag('PAGE LOAD — [build] index-doorhome 2026-10-27 — inv=' +
+  afdiag('PAGE LOAD — [build] index-paceclock 2026-11-02 — inv=' +
     (params.get('inv') || '(none)') +
     (AF_FORCE_MODE ? ' (order-keyed: index0=Door, index1=Rack)' : ''));
   // ===== AF DIAGNOSTIC LOGGER: JS END =======================================

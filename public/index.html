@@ -420,7 +420,7 @@
   // away on pan; auto-framing is separately HELD.
   const AF_FORCE_FALLBACK = { t: true, p: false };
   let afInvUnconfirmed = false;  // set true when an unrecognised camera is adopted
-  console.log('[build] index-paceclock 2026-11-02 — inv=' +
+  console.log('[build] index-mainclock 2026-11-04 — inv=' +
     (params.get('inv') || '(none)') + (AF_FORCE_MODE ? ' (order-keyed: index0=Door, index1=Rack)' : ''));
 
   // Google's public STUN servers — free, no signup, fine for most home networks.
@@ -1943,7 +1943,7 @@
     } catch (e) {}
   }
 
-  setInterval(paceClockTick, 1000);
+  setInterval(() => { paceClockTick(); paceClockMainSync(); }, 1000);
 
   function paceClockSvg() {
     const tick = (a, r1, w) =>
@@ -2021,6 +2021,161 @@
     } catch (e) {}
   }
   // ===== PACE CLOCK MODULE END ===========================================
+
+  // ===== MAIN CLOCK MODULE ===============================================
+  // TRAINER ONLY: the same pace clock over the remote video in the main window.
+  // Built only when !AF_FORCE_MODE (the gym launcher always passes inv=door) and
+  // removed for good if telemIsGym latches later. The face is paceClockSvg()
+  // split into three stacked SVGs so the hands sit in their own <div>: rotating
+  // an HTML element can run on the compositor, rotating an SVG group cannot.
+  // The pop-out clock is untouched. No timer of its own: the 1 s pace clock
+  // interval above calls paceClockMainSync(), which reads the session state
+  // and never writes it.
+  // Delete this block and the paceClockMainSync() call in that interval to
+  // remove the feature.
+
+  // ----- MAINCLOCK PURE START (test/mainclock.test.js extracts this part) -----
+  // Same text as the keyframes in paceClockBuildIn(); the test checks they match.
+  const PACECLOCK_KEYFRAMES = '@keyframes paceClockSweep{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}';
+
+  // '0' means hidden; anything else, including nothing stored, means shown.
+  function mainClockShown(raw) {
+    return raw !== '0';
+  }
+
+  // Splits paceClockSvg() into face (ticks, numbers), hands, and centre (disc,
+  // readout): three full SVGs on the same viewBox, stacked, with main-page IDs.
+  function mainClockSplit(svg) {
+    const open = '<g id="paceClockHands">';
+    const a = svg.indexOf(open);
+    const b = a < 0 ? -1 : svg.indexOf('</g>', a);
+    if (a < 0 || b < 0) return null;
+    const head = svg.slice(0, svg.indexOf('>') + 1);
+    const top = (id) => head.replace('id="paceClockSvg"', 'id="' + id + '" class="mainClockSvg"');
+    return {
+      face: top('mainClockFace') + svg.slice(head.length, a) + '</svg>',
+      hands: top('mainClockHandsSvg') + '<g>' + svg.slice(a + open.length, b) + '</g></svg>',
+      centre: top('mainClockCentre') + svg.slice(b + 4).replace('id="paceClockReadout"', 'id="mainClockReadout"')
+    };
+  }
+
+  // Width is size% of <main>'s width, capped at 45% of its height. The first
+  // width/height is the fallback for browsers without container query units.
+  // The top strip holds #camSwitchOverlay (moved in, its look unchanged) and the
+  // Clock pill in one no-wrap row at top-centre. The camera bar shrinks and
+  // scrolls sideways, as it already does, rather than growing down over the
+  // video; with the clock shown the row also stops short of the clock panel.
+  // Only the camera bar and the pill take clicks, as the camera bar does now.
+  function mainClockCss(size) {
+    const vw = 'min(' + size + 'vw,45vh)';
+    const cq = 'min(' + size + 'cqw,45cqh)';
+    return '#paceClockMainLayer{position:absolute;inset:0;z-index:4;pointer-events:none;container-type:size;}' +
+      '#paceClockMainPanel{position:absolute;top:10px;right:10px;border-radius:50%;' +
+      'background:rgba(0,0,0,0.7);pointer-events:none;width:' + vw + ';height:' + vw + ';}' +
+      '@supports (width:1cqw){#paceClockMainPanel{width:' + cq + ';height:' + cq + ';}}' +
+      '.mainClockSvg{position:absolute;inset:0;width:100%;height:100%;display:block;}' +
+      '#mainClockHands{position:absolute;inset:0;will-change:transform;' +
+      'animation:paceClockSweep 60s linear infinite;}' +
+      PACECLOCK_KEYFRAMES +
+      '#mainClockStripLayer{position:absolute;inset:0;z-index:5;pointer-events:none;container-type:size;}' +
+      '#mainClockStrip{position:absolute;top:calc(10px + env(safe-area-inset-top));left:50%;' +
+      'transform:translateX(-50%);display:flex;flex-wrap:nowrap;align-items:center;gap:8px;' +
+      'max-width:calc(100% - 24px);pointer-events:none;}' +
+      '@supports (width:1cqw){#mainClockStripLayer.clock-on #mainClockStrip{' +
+      'max-width:calc(100cqw - 2 * (' + cq + ' + 20px));}}' +
+      '#mainClockStrip #camSwitchOverlay{position:static;transform:none;max-width:none;' +
+      'flex:0 1 auto;min-width:0;pointer-events:auto;}' +
+      '#mainClockBtn{flex:0 0 auto;pointer-events:auto;padding:7px 12px;font-size:12px;border-radius:999px;' +
+      'white-space:nowrap;background:rgba(20,23,28,0.78);}';
+  }
+  // ----- MAINCLOCK PURE END ---------------------------------------------------
+
+  const LS_MAIN_CLOCK = 'trainingCall:mainClockShown';
+  let mainClock = null;  // set only on the trainer page, once built
+
+  // Never lets a clock failure affect the page.
+  function paceClockBuildMain() {
+    try {
+      const parts = mainClockSplit(paceClockSvg());
+      const mainEl = remoteVideo.parentElement;
+      const cams = document.getElementById('camSwitchOverlay');
+      if (!parts || !mainEl || !cams || cams.parentElement !== mainEl) return;
+      let shown = true;
+      try { shown = mainClockShown(localStorage.getItem(LS_MAIN_CLOCK)); } catch (e) {}
+
+      const style = document.createElement('style');
+      style.id = 'paceClockMainStyle';
+      style.textContent = mainClockCss(paceClockSize(params.get('clocksize')));
+      document.head.appendChild(style);
+
+      // A sibling of video#remote, so the zoom transform on the video never scales it.
+      const layer = document.createElement('div');
+      layer.id = 'paceClockMainLayer';
+      layer.innerHTML = '<div id="paceClockMainPanel">' + parts.face +
+        '<div id="mainClockHands">' + parts.hands + '</div>' + parts.centre + '</div>';
+      mainEl.appendChild(layer);
+
+      // The camera bar keeps its element, id and handlers; it only moves into
+      // the strip, so its show/hide and buttons work exactly as before.
+      const stripLayer = document.createElement('div');
+      stripLayer.id = 'mainClockStripLayer';
+      const strip = document.createElement('div');
+      strip.id = 'mainClockStrip';
+      const button = document.createElement('button');
+      button.id = 'mainClockBtn';
+      button.title = 'Show or hide the pace clock over the video';
+      mainEl.insertBefore(stripLayer, cams);
+      stripLayer.appendChild(strip);
+      strip.appendChild(cams);
+      strip.appendChild(button);
+
+      mainClock = { style, layer, stripLayer, cams, button, shown,
+        hands: layer.querySelector('#mainClockHands'),
+        readout: layer.querySelector('#mainClockReadout') };
+      button.addEventListener('click', () => {
+        if (!mainClock) return;
+        mainClock.shown = !mainClock.shown;
+        try { localStorage.setItem(LS_MAIN_CLOCK, mainClock.shown ? '1' : '0'); } catch (e) {}
+        paceClockMainApply();
+      });
+      paceClockMainApply();
+    } catch (e) {}
+  }
+
+  function paceClockMainApply() {
+    mainClock.layer.style.display = mainClock.shown ? '' : 'none';
+    mainClock.stripLayer.classList.toggle('clock-on', mainClock.shown);
+    mainClock.button.textContent = mainClock.shown ? 'Clock: On' : 'Clock: Off';
+    paceClockMainSync();
+  }
+
+  function paceClockMainSync() {
+    if (!mainClock) return;
+    try {
+      if (telemIsGym) { paceClockMainRemove(); return; }
+      if (!mainClock.shown) return;
+      const now = Date.now();
+      mainClock.readout.textContent = paceClockFormat(paceClockState, now);
+      // display:none drops the CSS animation, so look it up each time.
+      const anim = mainClock.hands.getAnimations()[0];
+      if (anim && (anim.currentTime === null ||
+          Math.abs(paceClockDrift(anim.currentTime, now)) > PACECLOCK_RESYNC_MS)) {
+        anim.currentTime = now % PACECLOCK_PERIOD_MS;
+      }
+    } catch (e) {}
+  }
+
+  function paceClockMainRemove() {
+    const m = mainClock;
+    mainClock = null;
+    // Put the camera bar back where the HTML has it before removing the strip.
+    try { m.stripLayer.parentElement.insertBefore(m.cams, m.stripLayer); } catch (e) {}
+    [m.style, m.layer, m.stripLayer].forEach((el) => { try { el.remove(); } catch (e) {} });
+    try { afdiag('MAINCLOCK removed: gym role latched'); } catch (e) {}
+  }
+
+  if (!AF_FORCE_MODE) paceClockBuildMain();
+  // ===== MAIN CLOCK MODULE END ===========================================
   // ===== SELF-VIEW POPOUT MODULE END =====================================
 
   // ===== AUTO-FRAME MODULE: JS START =====================================
@@ -2634,7 +2789,7 @@
   try { window.addEventListener('pagehide', afdiagFlush); } catch (e) {}
   try { window.addEventListener('beforeunload', afdiagFlush); } catch (e) {}
 
-  afdiag('PAGE LOAD — [build] index-paceclock 2026-11-02 — inv=' +
+  afdiag('PAGE LOAD — [build] index-mainclock 2026-11-04 — inv=' +
     (params.get('inv') || '(none)') +
     (AF_FORCE_MODE ? ' (order-keyed: index0=Door, index1=Rack)' : ''));
   // ===== AF DIAGNOSTIC LOGGER: JS END =======================================

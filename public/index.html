@@ -420,7 +420,7 @@
   // away on pan; auto-framing is separately HELD.
   const AF_FORCE_FALLBACK = { t: true, p: false };
   let afInvUnconfirmed = false;  // set true when an unrecognised camera is adopted
-  console.log('[build] index-stopwatch 2026-11-05 — inv=' +
+  console.log('[build] index-stopfix 2026-11-08 — inv=' +
     (params.get('inv') || '(none)') + (AF_FORCE_MODE ? ' (order-keyed: index0=Door, index1=Rack)' : ''));
 
   // Google's public STUN servers — free, no signup, fine for most home networks.
@@ -2359,9 +2359,14 @@
       const session = 'Session ' + paceClockFormat(paceClockState, now);
       if (v.session.textContent !== session) v.session.textContent = session;
       if (v.startStop) {
-        v.startStop.textContent = s.running ? 'Stop' : 'Start';
-        v.startStop.className = s.running ? 'stop' : 'start';
-        v.reset.disabled = !s.running && s.elapsedMs === 0;
+        // Write only on a change: rewriting the same text 10x a second while running
+        // replaces the button's text node under the pointer and Safari then drops the click.
+        const ssText = s.running ? 'Stop' : 'Start';
+        const ssClass = s.running ? 'stop' : 'start';
+        if (v.startStop.textContent !== ssText) v.startStop.textContent = ssText;
+        if (v.startStop.className !== ssClass) v.startStop.className = ssClass;
+        const resetOff = !s.running && s.elapsedMs === 0;
+        if (v.reset.disabled !== resetOff) v.reset.disabled = resetOff;
       }
       const want = s.running && v.doc.visibilityState === 'visible' && v.shown();
       if (want && !v.fast) v.fast = v.win.setInterval(() => clockViewUpdate(v), STOPWATCH_FAST_MS);
@@ -3281,7 +3286,7 @@
   try { window.addEventListener('pagehide', afdiagFlush); } catch (e) {}
   try { window.addEventListener('beforeunload', afdiagFlush); } catch (e) {}
 
-  afdiag('PAGE LOAD — [build] index-stopwatch 2026-11-05 — inv=' +
+  afdiag('PAGE LOAD — [build] index-stopfix 2026-11-08 — inv=' +
     (params.get('inv') || '(none)') +
     (AF_FORCE_MODE ? ' (order-keyed: index0=Door, index1=Rack)' : ''));
   // ===== AF DIAGNOSTIC LOGGER: JS END =======================================

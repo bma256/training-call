@@ -420,7 +420,7 @@
   // away on pan; auto-framing is separately HELD.
   const AF_FORCE_FALLBACK = { t: true, p: false };
   let afInvUnconfirmed = false;  // set true when an unrecognised camera is adopted
-  console.log('[build] index-stopfix 2026-11-08 — inv=' +
+  console.log('[build] index-effort-f 2026-11-11 — inv=' +
     (params.get('inv') || '(none)') + (AF_FORCE_MODE ? ' (order-keyed: index0=Door, index1=Rack)' : ''));
 
   // Google's public STUN servers — free, no signup, fine for most home networks.
@@ -1395,6 +1395,10 @@
         // TELEMETRY MODULE: gym-side arrival of a batch of trainer log lines.
         // Purely additive leaf -- camera-list/switch-camera above untouched.
         (msg.lines || []).forEach((line) => afdiagIngestRemote(line));
+      } else if (msg.type === 'effort-ask') {
+        effortAskReceive(msg);   // EFFORT MODULE: trainer side
+      } else if (msg.type === 'effort') {
+        try { if (window.__POSEREC__ && window.__POSEREC__.remote) window.__POSEREC__.remote(msg); } catch (e) {}   // EFFORT MODULE: gym side, ?poserec=1 only
       } else if (typeof msg.type === 'string' && msg.type in sharedWidgets) {
         // STOPWATCH MODULE: a shared-widget snapshot ({type:'timer', snapshot}).
         sharedWidgets[msg.type].receive(msg.snapshot);
@@ -1909,11 +1913,16 @@
   }
 
   // The registered phrase whose words all appear in the result, or null when
-  // none does or more than one does (ambiguous, e.g. "timer start stop").
+  // none does. When several do, the longest wins if its words include every
+  // other hit's words ("set start squats" over "set start"); otherwise it is
+  // ambiguous and nothing runs (e.g. "timer start stop").
   function voiceCmdMatch(phrases, text) {
     const heard = voiceCmdWords(text);
     const hits = phrases.filter((p) => p.split(' ').every((w) => heard.includes(w)));
-    return hits.length === 1 ? hits[0] : null;
+    if (hits.length <= 1) return hits[0] || null;
+    const best = hits.reduce((a, b) => (b.split(' ').length > a.split(' ').length ? b : a));
+    const words = best.split(' ');
+    return hits.every((h) => h.split(' ').every((w) => words.includes(w))) ? best : null;
   }
   // ----- VOICECMD PURE END ----------------------------------------------------
 
@@ -1924,14 +1933,21 @@
   const VOICECMD_REFIRE_MS = 1200;
   const voiceCmd = {
     entries: new Map(),     // phrase -> action
-    on: false, loading: false, status: 'off', lastFire: 0, statusEl: null,
+    listeners: [],          // given every final result's text, never matched (POSEREC set naming)
+    on: false, loading: false, status: 'off', lastFire: 0, statusEl: null, note: '',
     gen: 0,                 // bumped by every stop, so a start still loading knows it was cancelled
     model: null, rec: null, ctx: null, mic: null, src: null, proc: null
   };
 
   function voiceCmdSetStatus(s) {
     voiceCmd.status = s;
-    if (voiceCmd.statusEl) voiceCmd.statusEl.textContent = 'voice: ' + s;
+    if (voiceCmd.statusEl) voiceCmd.statusEl.textContent = 'voice: ' + s + (voiceCmd.note ? ' · ' + voiceCmd.note : '');
+  }
+
+  // Extra text after the status; POSEREC shows the open set here.
+  function voiceCmdNote(text) {
+    voiceCmd.note = String(text || '');
+    voiceCmdSetStatus(voiceCmd.status);
   }
 
   // KINESIS keeps its voice state private; its panel shows it. Anything but
@@ -1959,6 +1975,7 @@
     const text = (msg && msg.result && msg.result.text) || '';
     if (voiceCmdAllUnk(text)) return;
     afdiag('VOICE result text=' + text);
+    voiceCmd.listeners.forEach((fn) => { try { fn(text); } catch (e) {} });
     const hit = voiceCmdMatch([...voiceCmd.entries.keys()], text);
     if (!hit) return;
     const now = Date.now();
@@ -2079,6 +2096,7 @@
 
   window.__VOICECMD__ = Object.freeze({
     register: voiceCmdRegister,
+    listen: (fn) => { if (typeof fn !== 'function') return false; voiceCmd.listeners.push(fn); return true; },
     start: voiceCmdStart,
     stop: () => voiceCmdStop('api', true),
     status: () => ({ enabled: VOICECMD_ON, on: voiceCmd.on, loading: voiceCmd.loading,
@@ -2252,6 +2270,24 @@
   try { stopwatchState = stopwatchParse(localStorage.getItem(LS_STOPWATCH)); } catch (e) {}
   let stopwatchSeenSeq = 0;          // highest seq received from the other side
   const clockViews = [];             // clock panels currently built (main window, pop-out)
+  // EFFORT MODULE state, declared before any clock view can be built: the
+  // gym's own last rating for the pop-out ('' = no line). Gym role with
+  // ?poserec=1 only; the POSEREC block sets it through __POSEREC_HOST__.effort().
+  const EFFORT_GYM = AF_FORCE_MODE && params.get('poserec') === '1';
+  let effortSelfText = '';
+  let effortPersonText = '';   // person and open set for the pop-out, "Alex · set 2 squats" ('' = no line)
+  // Large confirmation text on the pop-out for EFFORT_FLASH_MS after each
+  // accepted voice command (pop-out only; gym role with ?poserec=1 only).
+  const EFFORT_FLASH_MS = 2500;
+  let effortFlashText = '', effortFlashUntil = 0, effortFlashTimer = 0;
+  function effortFlash(text) {
+    if (!EFFORT_GYM) return;
+    effortFlashText = String(text || '');
+    effortFlashUntil = Date.now() + EFFORT_FLASH_MS;
+    clearTimeout(effortFlashTimer);
+    effortFlashTimer = setTimeout(clockViewsUpdate, EFFORT_FLASH_MS + 50);
+    clockViewsUpdate();
+  }
 
   function stopwatchSet(next, action, src) {
     stopwatchState = next;
@@ -2314,10 +2350,25 @@
     SHARED_RESEND_MS.forEach((ms) => setTimeout(sharedWidgetSendAll, ms));
   }
 
+  // ----- VOICEALIAS PURE START (test/effort.test.js extracts this part) -----
+  // Every way to say each timer command, originals first ("<word> start" etc.,
+  // word from ?voiceword=, default "timer"), then the aliases; all go through
+  // the same registry. The clock phrases are fixed.
+  function stopwatchVoicePhrases(word) {
+    return [
+      { phrase: word + ' start', cmd: 'start' }, { phrase: word + ' stop', cmd: 'stop' }, { phrase: word + ' reset', cmd: 'reset' },
+      { phrase: 'start ' + word, cmd: 'start' }, { phrase: word + ' go', cmd: 'start' },
+      { phrase: 'start the clock', cmd: 'start' }, { phrase: 'clock start', cmd: 'start' },
+      { phrase: 'stop ' + word, cmd: 'stop' }, { phrase: 'stop the clock', cmd: 'stop' }, { phrase: 'clock stop', cmd: 'stop' },
+      { phrase: 'reset ' + word, cmd: 'reset' }, { phrase: 'reset the clock', cmd: 'reset' }, { phrase: 'clock reset', cmd: 'reset' }];
+  }
+  // ----- VOICEALIAS PURE END -----
+
   const STOPWATCH_VOICE_WORD = stopwatchVoiceWord(params.get('voiceword'));
   if (window.__VOICECMD__) {
-    ['start', 'stop', 'reset'].forEach((cmd) => {
-      window.__VOICECMD__.register({ phrase: STOPWATCH_VOICE_WORD + ' ' + cmd, action: () => stopwatchCommand(cmd, 'voice') });
+    stopwatchVoicePhrases(STOPWATCH_VOICE_WORD).forEach((p) => {
+      // EFFORT MODULE: an accepted command also flashes on the pop-out (gym, ?poserec=1 only).
+      window.__VOICECMD__.register({ phrase: p.phrase, action: () => { if (stopwatchCommand(p.cmd, 'voice')) effortFlash('Timer ' + p.cmd); } });
     });
   }
 
@@ -2328,7 +2379,7 @@
   function clockViewMake(win, doc, root, prefix, shown) {
     const q = (id) => root.querySelector('#' + prefix + id);
     const v = { win, doc, shown, fast: 0, failed: false, digits: q('Readout'), session: q('Session'),
-      startStop: q('StartStop'), reset: q('Reset') };
+      startStop: q('StartStop'), reset: q('Reset'), effort: q('Effort'), person: q('Person'), flash: q('Flash') };
     v.onVisibility = () => clockViewUpdate(v);
     doc.addEventListener('visibilitychange', v.onVisibility);
     clockViews.push(v);
@@ -2358,6 +2409,22 @@
       if (v.session.hidden === inSession) v.session.hidden = !inSession;
       const session = 'Session ' + paceClockFormat(paceClockState, now);
       if (v.session.textContent !== session) v.session.textContent = session;
+      if (v.effort) {
+        // EFFORT MODULE: the gym's own last rating (pop-out only, ?poserec=1).
+        if (v.effort.hidden === !!effortSelfText) v.effort.hidden = !effortSelfText;
+        if (v.effort.textContent !== effortSelfText) v.effort.textContent = effortSelfText;
+      }
+      if (v.person) {
+        // EFFORT MODULE: the current person and open set (pop-out only, ?poserec=1).
+        if (v.person.hidden === !!effortPersonText) v.person.hidden = !effortPersonText;
+        if (v.person.textContent !== effortPersonText) v.person.textContent = effortPersonText;
+      }
+      if (v.flash) {
+        // EFFORT MODULE: the confirmation flash (pop-out only, ?poserec=1).
+        const on = !!effortFlashText && Date.now() < effortFlashUntil;
+        if (v.flash.hidden === on) v.flash.hidden = !on;
+        if (on && v.flash.textContent !== effortFlashText) v.flash.textContent = effortFlashText;
+      }
       if (v.startStop) {
         // Write only on a change: rewriting the same text 10x a second while running
         // replaces the button's text node under the pointer and Safari then drops the click.
@@ -2533,7 +2600,11 @@
       const panel = doc.createElement('div');
       panel.id = 'paceClockPanel';
       panel.className = 'clockFace';
-      panel.innerHTML = clockFaceHtml('paceClock', false);
+      panel.innerHTML = clockFaceHtml('paceClock', false) +
+        (EFFORT_GYM ? '<div id="paceClockEffort" class="clockSession" hidden></div>' +
+          '<div id="paceClockPerson" class="clockSession" style="font-size:calc(var(--clock-w) * 0.055)" hidden></div>' +
+          '<div id="paceClockFlash" style="position:fixed;left:0;right:0;top:4vh;z-index:3;text-align:center;pointer-events:none;' +
+          'font:700 7vw/1.1 Arial,Helvetica,sans-serif;color:#fff;text-shadow:0 0 0.6vw #000,0 0 1.5vw #000;white-space:nowrap;" hidden></div>' : '');   // EFFORT MODULE
       doc.body.appendChild(panel);
 
       const view = clockViewMake(win, doc, panel, 'paceClock', () => true);
@@ -2673,6 +2744,134 @@
 
   if (!AF_FORCE_MODE) paceClockBuildMain();
   // ===== MAIN CLOCK MODULE END ===========================================
+
+  // ===== EFFORT MODULE (trainer side) ====================================
+  // When the gym (?poserec=1) closes a set it sends {type:'effort-ask', set,
+  // n, exercise} on controlChannel (set: the id that joins records; n: 1, 2,
+  // 3... per gym page load, the number shown). The trainer's main window then
+  // shows a row of 1-10 buttons under the stopwatch for EFFORT_ASK_MS; a tap
+  // sends {type:'effort', set, value} back and removes the row. Blind: the row
+  // never shows the gym's rating, and the gym never shows this one; afdiag
+  // lines here leave the value out. Nothing is built until an ask arrives,
+  // so a call with a gym page without ?poserec=1 leaves no trace here.
+  // The gym side lives in the POSEREC block. Delete this block, the two
+  // effort branches in setupControlChannel() and the EFFORT lines in the
+  // STOPWATCH and PACE CLOCK modules to remove the feature.
+
+  // ----- EFFORT PURE START (test/effort.test.js extracts this part) -----
+  const EFFORT_ASK_MS = 60000;
+
+  function effortValue(v) {
+    return (Number.isInteger(v) && v >= 1 && v <= 10) ? v : null;
+  }
+
+  // {set, n, exercise} from an effort-ask message, or null. n falls back to
+  // the set id when the gym sends none.
+  function effortAskParse(msg) {
+    if (!msg || msg.type !== 'effort-ask' || !Number.isSafeInteger(msg.set) || msg.set < 1) return null;
+    const n = (Number.isSafeInteger(msg.n) && msg.n >= 1) ? msg.n : msg.set;
+    const ex = (typeof msg.exercise === 'string' && /^[a-z ]{1,40}$/.test(msg.exercise)) ? msg.exercise : null;
+    return { set: msg.set, n, exercise: ex };
+  }
+
+  function effortTapMsg(set, value) {
+    return { type: 'effort', set, value };
+  }
+
+  function effortRowCss() {
+    return '#effortAskRow{position:absolute;right:10px;top:10px;z-index:5;display:flex;flex-direction:column;' +
+      'align-items:flex-end;gap:6px;max-width:calc(100% - 20px);pointer-events:none;}' +
+      '#effortAskRow .effortTitle{font:600 13px Arial,Helvetica,sans-serif;color:#fff;background:rgba(0,0,0,0.7);' +
+      'padding:3px 8px;border-radius:6px;white-space:nowrap;}' +
+      '#effortAskRow .effortBtns{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:5px;pointer-events:auto;}' +
+      '#effortAskRow .effortBtns button{min-width:34px;height:34px;padding:0 6px;border-radius:999px;cursor:pointer;' +
+      'border:1px solid rgba(255,255,255,0.35);background:rgba(20,23,28,0.85);color:#fff;' +
+      'font:700 15px Arial,Helvetica,sans-serif;}';
+  }
+
+  // Title (exercise, seconds left) and ten buttons 1..10.
+  function effortRowHtml(ask, secsLeft) {
+    let btns = '';
+    for (let v = 1; v <= 10; v++) btns += '<button type="button" data-effort="' + v + '">' + v + '</button>';
+    return '<div class="effortTitle">' + effortTitle(ask, secsLeft) + '</div><div class="effortBtns">' + btns + '</div>';
+  }
+
+  function effortTitle(ask, secsLeft) {
+    return 'Effort' + (ask.exercise ? ' · ' + ask.exercise : '') + ' · set ' + ask.n + ' · ' + secsLeft + 's';
+  }
+  // ----- EFFORT PURE END ------------------------------------------------
+
+  let effortAsk = null;   // { set, n, exercise, until, el, timer }
+
+  function effortAskClose(why) {
+    const a = effortAsk;
+    if (!a) return;
+    effortAsk = null;
+    try { clearInterval(a.timer); } catch (e) {}
+    try { a.el.remove(); } catch (e) {}
+    if (why) { try { afdiag('EFFORT ask ' + why + ' set=' + a.n); } catch (e) {} }
+  }
+
+  // Under the main clock panel while it is shown; top right otherwise.
+  function effortAskPlace() {
+    const a = effortAsk;
+    if (!a || !mainClock) return;
+    let top = 10;
+    if (mainClock.shown) {
+      const panel = document.getElementById('paceClockMainPanel');
+      const host = a.el.parentElement;
+      if (panel && host) top = Math.round(panel.getBoundingClientRect().bottom - host.getBoundingClientRect().top + 8);
+    }
+    if (a.el.style.top !== top + 'px') a.el.style.top = top + 'px';
+  }
+
+  function effortAskTick() {
+    const a = effortAsk;
+    if (!a) return;
+    const left = Math.ceil((a.until - Date.now()) / 1000);
+    if (left <= 0 || !mainClock) { effortAskClose('expired'); return; }
+    const title = a.el.querySelector('.effortTitle');
+    const text = effortTitle(a, left);
+    if (title && title.textContent !== text) title.textContent = text;
+    effortAskPlace();
+  }
+
+  function effortAskReceive(msg) {
+    try {
+      if (!telemIsTrainer() || !mainClock) return;   // trainer main window only
+      const ask = effortAskParse(msg);
+      if (!ask) return;
+      effortAskClose(effortAsk ? 'replaced' : null);
+      if (!document.getElementById('effortAskStyle')) {
+        const style = document.createElement('style');
+        style.id = 'effortAskStyle';
+        style.textContent = effortRowCss();
+        document.head.appendChild(style);
+      }
+      const el = document.createElement('div');
+      el.id = 'effortAskRow';
+      el.innerHTML = effortRowHtml(ask, Math.round(EFFORT_ASK_MS / 1000));
+      mainClock.layer.parentElement.appendChild(el);
+      effortAsk = Object.assign(ask, { until: Date.now() + EFFORT_ASK_MS, el, timer: setInterval(effortAskTick, 1000) });
+      el.querySelector('.effortBtns').addEventListener('click', (e) => {
+        const b = e.target && e.target.closest ? e.target.closest('button[data-effort]') : null;
+        if (!b || effortAsk !== ask) return;
+        const value = effortValue(Number(b.getAttribute('data-effort')));
+        if (!value) return;
+        let sent = false;
+        try {
+          if (controlChannel && controlChannel.readyState === 'open') {
+            controlChannel.send(JSON.stringify(effortTapMsg(ask.set, value)));
+            sent = true;
+          }
+        } catch (e2) {}
+        effortAskClose(sent ? 'answered' : 'answered but not sent (channel closed)');
+      });
+      effortAskPlace();
+      afdiag('EFFORT ask shown set=' + ask.n + ' exercise=' + (ask.exercise || '(none)'));
+    } catch (e) {}
+  }
+  // ===== EFFORT MODULE (trainer side) END ================================
   // ===== SELF-VIEW POPOUT MODULE END =====================================
 
   // ===== AUTO-FRAME MODULE: JS START =====================================
@@ -3286,7 +3485,7 @@
   try { window.addEventListener('pagehide', afdiagFlush); } catch (e) {}
   try { window.addEventListener('beforeunload', afdiagFlush); } catch (e) {}
 
-  afdiag('PAGE LOAD — [build] index-stopfix 2026-11-08 — inv=' +
+  afdiag('PAGE LOAD — [build] index-effort-f 2026-11-11 — inv=' +
     (params.get('inv') || '(none)') +
     (AF_FORCE_MODE ? ' (order-keyed: index0=Door, index1=Rack)' : ''));
   // ===== AF DIAGNOSTIC LOGGER: JS END =======================================
@@ -4233,6 +4432,7 @@
     if (lms) afM.vis = afVisStats(lms);
     afLastResult = result;
     if (window.__KINESIS__) window.__KINESIS__.consume(result);
+    if (window.__POSEREC__) window.__POSEREC__.consume(result, t0, dt);
 
     afRender(result);
     if (afFraming) afMaybeDrive(result);
@@ -4244,10 +4444,677 @@
   afLog('Auto-frame module loaded (v14 merge).', 'af-ok');
   if (!AF_FORCE_MODE) afLog('Inverts are stored per deviceId PER ORIGIN — nothing carries over from the bench on localhost:8090. Expect to set them once here.', 'af-warn');
   requestAnimationFrame(afLoop);
+
+  // ===== POSEREC HOST: the only parts of this script the POSEREC block
+  // (?poserec=1 only) can reach -- afdiag lines, the active camera's role
+  // (same index rule as auto-framing), and the note in the voice status text.
+  if (params.get('poserec') === '1') {
+    window.__POSEREC_HOST__ = Object.freeze({
+      log: (msg) => afdiag(String(msg)),
+      role: () => { const r = afRoleFor(afOpenDeviceId); return r ? r.role.toLowerCase() : 'unknown'; },
+      note: (text) => voiceCmdNote(text),
+      // EFFORT MODULE: gym role, the effort-ask message, the pop-out line.
+      gym: () => telemIsGym,
+      send: (msg) => {
+        if (!controlChannel || controlChannel.readyState !== 'open') return false;
+        controlChannel.send(JSON.stringify(msg));
+        return true;
+      },
+      effort: (text) => { effortSelfText = String(text || ''); clockViewsUpdate(); },
+      person: (text) => { effortPersonText = String(text || ''); clockViewsUpdate(); },
+      flash: (text) => effortFlash(text)
+    });
+  }
   // ===== AUTO-FRAME MODULE: JS END =======================================
 
 
   init();
+})();
+</script>
+<script>
+/* =======================================================================
+   POSEREC — landmark recorder. Test build index-effort-f 2026-11-11.
+   -----------------------------------------------------------------------
+   - ?poserec=1 to enable; fully dormant otherwise (no globals, no timers,
+     no phrases registered).
+   - Read-only consumer of the pose stream: afLoop hands every detection to
+     window.__POSEREC__.consume(result, t0, dt), beside the KINESIS tap.
+     Never touches WebRTC, PTZ or framing.
+   - Records frames that have a person, only while a set is open, plus
+     POSEREC_PRE_MS before it (ring buffer) and POSEREC_POST_MS after it.
+   - Sets are labelled by voice through the __VOICECMD__ registry (not the
+     KINESIS engine): "set start", "set start <exercise>", "set stop". A set
+     closes itself after POSEREC_AUTO_CLOSE_MS. The open set shows in the
+     small voice status text.
+   - Transport follows the LOGSTREAM pattern: batched POSTs to a loopback
+     receiver (default http://127.0.0.1:4012/pose; ?posesink= for another
+     loopback URL), capped queue, backoff, every failure swallowed.
+     Landmarks never go through afdiag. afdiag gets one line per set
+     start/stop and at most one per sink outage and one per recovery.
+   - Reaches the main script only through window.__POSEREC_HOST__ (afdiag,
+     camera role, voice status note), which exists only with ?poserec=1.
+   - Set naming: an exercise from the list heard as its own final result
+     within POSEREC_NAME_MS of a bare "set start" names that open set (its
+     stop record, effort-ask and the journal carry the name). Later, or for a
+     set that has a name, a lone exercise word does nothing. Uses
+     __VOICECMD__.listen(), which sees results but never matches them.
+   - EFFORT (gym role only): "effort one".."effort ten" said during a set
+     closes that set at once (reason=effort) and rates it; said between sets
+     it rates the last closed set. "session effort one".."ten" rates the whole
+     session. Every set stop sends {type:'effort-ask', set, n,
+     exercise} to the trainer, whose tap comes back as {type:'effort', set,
+     value} (see the EFFORT MODULE in the main script). Each rating is one
+     effort record plus one afdiag line. The pop-out shows the gym's own last
+     rating; the trainer's rating is never shown on the gym, nor the gym's on
+     the trainer.
+   - PERSON (gym role only): "session start maria" / "session start alex"
+     closes any open set (reason=person), sets the current person, writes one
+     person record and one afdiag line, and restarts n at 1. Later set and
+     effort records carry person (null until a name is said; an effort on a
+     set carries that set's person). The person is kept in localStorage for
+     the rest of the day (America/Toronto), so a reload keeps it. The pop-out
+     shows the name small under the effort line; the trainer sees nothing.
+   - FLASH (gym role only, pop-out only): every accepted voice command shows
+     large text near the top of the pop-out for 2.5 s: the person's name, "Set 1
+     · squats" (again when a lone word names the set), "Set 1 done", "Effort 7"
+     / "Session effort 8", "Timer start/stop/reset". Ignored commands, the
+     trainer's tap and automatic closes show nothing. The small line under the
+     effort line shows the person and open set, "Alex · set 2 squats".
+   Record format (one JSON object per line at the receiver):
+     {type:'frame', t, seq, set, role, w, h, ms, hidden, lm, wlm}
+       lm / wlm: landmarks[0] / worldLandmarks[0] as [[x,y,z,visibility],...]
+       rounded to 4 decimals; wlm is null when the model gives none.
+     {type:'set', action:'start'|'stop', exercise, t, seq, set, n, person
+       [, reason, durMs, frames on stop]}   n: 1, 2, 3... since the page load or the last person
+     {type:'effort', sid, t, set, by:'self'|'trainer', scope:'set'|'session',
+       value 1-10, person, seq}   set is null for scope 'session'.
+     {type:'person', sid, t, person, seq}
+     t is epoch ms; seq counts every record of this page load; set is the
+     seq of the set's start event (pre-roll frames follow that event).
+   ======================================================================= */
+(function () {
+  'use strict';
+  const Q = new URLSearchParams(location.search);
+  if (Q.get('poserec') !== '1') return;
+
+  // ----- POSEREC PURE START (test/poserec.test.js extracts this part) -----
+  // Spoken exercise names for "set start <exercise>". Edit freely, but use
+  // words the Vosk small model knows: it has no "deadlift", so "dead lift".
+  const POSEREC_EXERCISES = ['squats', 'pushups', 'lunges', 'rows', 'press', 'curls', 'plank', 'dead lift'];
+  const POSEREC_PRE_MS = 5000;
+  const POSEREC_POST_MS = 5000;
+  const POSEREC_AUTO_CLOSE_MS = 5 * 60 * 1000;
+  const POSEREC_NAME_MS = 3000;   // a lone exercise word this soon after a bare "set start" names the set
+
+  function poserecRound(v) {
+    return (typeof v === 'number' && isFinite(v)) ? Math.round(v * 1e4) / 1e4 : 0;
+  }
+
+  // [[x, y, z, visibility], ...], or null when there are no points.
+  function poserecPoints(list) {
+    if (!Array.isArray(list) || !list.length) return null;
+    return list.map((p) => [poserecRound(p.x), poserecRound(p.y), poserecRound(p.z), poserecRound(p.visibility)]);
+  }
+
+  // One frame record, or null when no person was found.
+  function poserecFrame(result, meta) {
+    const lm = poserecPoints(result && result.landmarks && result.landmarks[0]);
+    if (!lm) return null;
+    const ms = Number(meta.ms);
+    return {
+      type: 'frame', t: meta.t, role: meta.role, w: meta.w, h: meta.h,
+      ms: isFinite(ms) ? Math.round(ms * 10) / 10 : null, hidden: !!meta.hidden,
+      lm, wlm: poserecPoints(result.worldLandmarks && result.worldLandmarks[0])
+    };
+  }
+
+  // Voice phrases and what each one does: every way to say set start (bare
+  // or with an exercise) and set stop, originals first.
+  const POSEREC_SET_START = ['set start', 'start set', 'begin set'];
+  const POSEREC_SET_STOP = ['set stop', 'stop set', 'end set', 'set done'];
+
+  function poserecPhrases(exercises) {
+    const out = [{ phrase: 'set start', action: 'start', exercise: null }, { phrase: 'set stop', action: 'stop', exercise: null }]
+      .concat(exercises.map((ex) => ({ phrase: 'set start ' + ex, action: 'start', exercise: ex })));
+    POSEREC_SET_START.slice(1).forEach((s) => {
+      out.push({ phrase: s, action: 'start', exercise: null });
+      exercises.forEach((ex) => out.push({ phrase: s + ' ' + ex, action: 'start', exercise: ex }));
+    });
+    POSEREC_SET_STOP.slice(1).forEach((s) => out.push({ phrase: s, action: 'stop', exercise: null }));
+    return out;
+  }
+
+  // Set state, the pre-roll ring buffer and the post-roll window. Times are
+  // epoch ms passed in by the caller. emit(record) gets every record to send,
+  // in order, with seq and set already filled in.
+  function poserecRecorder(emit, opts) {
+    const o = Object.assign({ preMs: POSEREC_PRE_MS, postMs: POSEREC_POST_MS, autoCloseMs: POSEREC_AUTO_CLOSE_MS,
+      nameMs: POSEREC_NAME_MS }, opts);
+    let seq = 0;
+    let count = 0;      // sets started in this page load, for n
+    let person = null;  // carried by set records; setPerson() restarts n
+    let ring = [];      // frames waiting for a set, newest last, at most preMs old
+    let open = null;    // { set, n, person, exercise, t, frames }
+    let post = null;    // { set, until } after a stop
+    const out = (rec) => { rec.seq = ++seq; emit(rec); return rec; };
+
+    function frame(rec) {
+      if (!rec) return;
+      if (open) { rec.set = open.set; open.frames++; out(rec); return; }
+      if (post && rec.t <= post.until) { rec.set = post.set; out(rec); return; }
+      post = null;
+      ring.push(rec);
+      const cutoff = rec.t - o.preMs;
+      let i = 0;
+      while (i < ring.length && ring[i].t < cutoff) i++;
+      if (i) ring = ring.slice(i);
+    }
+
+    function start(exercise, now) {
+      const ended = open ? stop('restart', now) : null;
+      const set = seq + 1;
+      const n = ++count;
+      const event = out({ type: 'set', action: 'start', exercise: exercise || null, t: now, set, n, person });
+      open = { set, n, person, exercise: exercise || null, t: now, frames: 0 };
+      post = null;
+      const cutoff = now - o.preMs;
+      const pre = ring.filter((r) => r.t >= cutoff);
+      ring = [];
+      pre.forEach((r) => { r.set = set; open.frames++; out(r); });
+      return { event, ended, pre: pre.length };
+    }
+
+    function stop(reason, now) {
+      if (!open) return null;
+      const s = open;
+      open = null;
+      post = { set: s.set, until: now + o.postMs };
+      return out({ type: 'set', action: 'stop', exercise: s.exercise, t: now, set: s.set, n: s.n, person: s.person,
+        reason, durMs: now - s.t, frames: s.frames });
+    }
+
+    function tick(now) {
+      return (open && now - open.t >= o.autoCloseMs) ? stop('auto', now) : null;
+    }
+
+    function state() {
+      return { open: open ? Object.assign({}, open) : null, post: !!post, ring: ring.length, seq, person };
+    }
+
+    // The person for sets started from now on; n starts again at 1.
+    function setPerson(p) {
+      person = p || null;
+      count = 0;
+    }
+
+    // Any other record (effort): seq filled in, emitted at once.
+    function event(rec) {
+      return out(rec);
+    }
+
+    // Names the open set when it has no name and started within nameMs;
+    // returns a copy of the named set, or null when nothing changed.
+    function name(exercise, now) {
+      if (!open || open.exercise || !exercise || now - open.t > o.nameMs) return null;
+      open.exercise = exercise;
+      return Object.assign({}, open);
+    }
+
+    return { frame, start, stop, tick, state, event, name, setPerson };
+  }
+
+  // The exercise when a final result is exactly one list entry, else null.
+  function poserecExerciseWord(exercises, text) {
+    const said = String(text == null ? '' : text).toLowerCase().trim().split(/\s+/).join(' ');
+    return exercises.indexOf(said) >= 0 ? said : null;
+  }
+
+  // "effort one".."effort ten" rate a set; "session effort one".."ten" the session.
+  // "rate N" / "session rate N" are aliases, listed after the originals.
+  const POSEREC_EFFORT_WORDS = ['one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten'];
+
+  function poserecEffortPhrases() {
+    const out = [];
+    POSEREC_EFFORT_WORDS.forEach((w, i) => {
+      out.push({ phrase: 'effort ' + w, scope: 'set', value: i + 1 });
+      out.push({ phrase: 'session effort ' + w, scope: 'session', value: i + 1 });
+    });
+    POSEREC_EFFORT_WORDS.forEach((w, i) => {
+      out.push({ phrase: 'rate ' + w, scope: 'set', value: i + 1 });
+      out.push({ phrase: 'session rate ' + w, scope: 'session', value: i + 1 });
+    });
+    return out;
+  }
+
+  function poserecEffortValue(v) {
+    return (Number.isInteger(v) && v >= 1 && v <= 10) ? v : null;
+  }
+
+  // Which set a rating belongs to. Said while a set is open, it is held for
+  // that set until closed() (the page closes the set at once); otherwise it
+  // rates the last closed set. A trainer rating must name a set closed in this load.
+  function poserecEffortTracker() {
+    let pending = null;     // { set, value }
+    let last = null;        // last closed set
+    const closed = new Set();
+    return {
+      // { set, pending } or null when no set has been started yet.
+      self(value, openSet) {
+        if (openSet != null) { pending = { set: openSet, value }; return { set: openSet, pending: true }; }
+        return last != null ? { set: last, pending: false } : null;
+      },
+      // Called on every set stop; returns the waiting rating for it, or null.
+      closed(set) {
+        last = set;
+        closed.add(set);
+        const v = (pending && pending.set === set) ? pending.value : null;
+        pending = null;
+        return v;
+      },
+      known(set) { return closed.has(set); },
+      state() { return { pending: pending ? Object.assign({}, pending) : null, last }; }
+    };
+  }
+
+  function poserecEffortRecord(sid, t, set, by, scope, value, person) {
+    return { type: 'effort', sid, t, set, by, scope, value, person: person || null };
+  }
+
+  // "session start <name>" sets the current person. Names must be words the
+  // Vosk small model knows (both are, checked 2026-11-11 in graph/Gr.fst).
+  const POSEREC_PEOPLE = ['maria', 'alex'];
+  const POSEREC_PERSON_KEY = 'trainingCall:poserecPerson';
+
+  // "session start <name>", then the alias "start session <name>".
+  function poserecPersonPhrases(people) {
+    return people.map((p) => ({ phrase: 'session start ' + p, person: p }))
+      .concat(people.map((p) => ({ phrase: 'start session ' + p, person: p })));
+  }
+
+  function poserecPersonRecord(sid, t, person) {
+    return { type: 'person', sid, t, person };
+  }
+
+  // Pop-out text: "Maria".
+  function poserecPersonText(person) {
+    return person ? person.charAt(0).toUpperCase() + person.slice(1) : '';
+  }
+
+  // The pop-out's small status line: "Alex · set 2 squats", "Alex", "set 1", or ''.
+  function poserecStatusText(person, open) {
+    const set = open ? 'set ' + open.n + (open.exercise ? ' ' + open.exercise : '') : '';
+    return [poserecPersonText(person), set].filter(Boolean).join(' · ');
+  }
+
+  // The flash on set start (or naming): "Set 1 · squats", or "Set 1".
+  function poserecSetFlash(ev) {
+    return 'Set ' + ev.n + (ev.exercise ? ' · ' + ev.exercise : '');
+  }
+
+  // The America/Toronto day of epoch ms t, as YYYY-MM-DD.
+  function poserecDay(t) {
+    return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Toronto', year: 'numeric', month: '2-digit', day: '2-digit' }).format(t);
+  }
+
+  // The saved person when it was saved today and is still a known name, else null.
+  function poserecPersonRestore(raw, today, people) {
+    try {
+      const o = JSON.parse(raw);
+      return (o && o.day === today && people.indexOf(o.person) >= 0) ? o.person : null;
+    } catch (e) { return null; }
+  }
+
+  function poserecPersonSave(person, today) {
+    return JSON.stringify({ day: today, person });
+  }
+
+  // The pop-out line for the gym's own rating.
+  function poserecEffortText(scope, value) {
+    return (scope === 'session' ? 'Session effort ' : 'Effort ') + value;
+  }
+
+  // Same rule as LOGSINK_URL: only a loopback http(s) URL may override.
+  function poserecSinkUrl(param) {
+    try {
+      const u = new URL(param || '');
+      if (/^https?:$/.test(u.protocol) && /^(127\.0\.0\.1|localhost|\[::1\])$/.test(u.hostname)) return u.href;
+    } catch (e) {}
+    return 'http://127.0.0.1:4012/pose';
+  }
+
+  // Oldest-first serialized records within the caps (newestFirst for pagehide,
+  // still returned oldest-first). Records are ASCII JSON, so length is bytes.
+  function poserecTakeBatch(queue, maxRecords, maxBytes, newestFirst) {
+    const out = [];
+    let bytes = 64;   // {"sid":"...","records":[]}
+    const n = queue.length;
+    for (let k = 0; k < n && out.length < maxRecords; k++) {
+      const s = queue[newestFirst ? n - 1 - k : k];
+      if (out.length && bytes + s.length + 1 > maxBytes) break;
+      out.push(s);
+      bytes += s.length + 1;
+    }
+    return newestFirst ? out.reverse() : out;
+  }
+
+  function poserecBody(sid, records) {
+    return '{"sid":' + JSON.stringify(sid) + ',"records":[' + records.join(',') + ']}';
+  }
+
+  function poserecClock(ms) {
+    const s = Math.max(0, Math.floor(ms / 1000));
+    return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+  }
+  // ----- POSEREC PURE END -----------------------------------------------
+
+  const POSEREC_SINK_URL = poserecSinkUrl(Q.get('posesink'));
+  const POSEREC_TICK_MS = 2000;           // batch interval
+  const POSEREC_MAX_RECORDS = 400;        // per POST
+  const POSEREC_MAX_BYTES = 512 * 1024;   // per POST
+  const POSEREC_POSTS_PER_TICK = 5;
+  const POSEREC_QUEUE_MAX = 9000;         // 10 min at 15 Hz while unreachable -- oldest drop first
+  const POSEREC_BACKOFF_MIN_MS = 15000;
+  const POSEREC_BACKOFF_MAX_MS = 60000;
+  const POSEREC_TIMEOUT_MS = 10000;
+  const POSEREC_KEEPALIVE_BYTES = 60000;  // keepalive bodies are capped at 64 KB
+  const POSEREC_SID = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+
+  const host = window.__POSEREC_HOST__ || null;
+  const log = (msg) => { try { if (host) host.log(msg); } catch (e) {} };
+  const note = (text) => { try { if (host) host.note(text); } catch (e) {} };
+
+  let queue = [];          // serialized records not yet confirmed by the receiver
+  let busy = false;
+  let nextAt = 0, backoff = 0;
+  let failing = false, failCount = 0;
+  let dropped = 0, droppedAtFail = 0;
+  let sent = 0, consumed = 0, persons = 0;
+
+  const recorder = poserecRecorder((rec) => {
+    queue.push(JSON.stringify(rec));
+    if (queue.length > POSEREC_QUEUE_MAX) {
+      dropped += queue.length - POSEREC_QUEUE_MAX;
+      queue = queue.slice(queue.length - POSEREC_QUEUE_MAX);
+    }
+  });
+
+  function consume(result, t0, dt) {
+    try {
+      consumed++;
+      const lms = result && result.landmarks && result.landmarks[0];
+      if (!lms || !lms.length) return;
+      persons++;
+      const v = document.getElementById('local');
+      recorder.frame(poserecFrame(result, {
+        t: Math.round(performance.timeOrigin + t0),
+        role: host ? host.role() : 'unknown',
+        w: v ? v.videoWidth : 0, h: v ? v.videoHeight : 0,
+        ms: dt, hidden: document.hidden
+      }));
+    } catch (e) { /* the recorder must never affect the pose loop */ }
+  }
+
+  const gym = () => { try { return !!(host && host.gym()); } catch (e) { return false; } };
+  const effort = poserecEffortTracker();
+  const setPersons = new Map();   // closed set id -> its person, for ratings that come later
+
+  // A set rating carries that set's person; a session rating the current one.
+  function effortEmit(by, scope, set, value) {
+    const person = (set != null && setPersons.has(set)) ? setPersons.get(set) : recorder.state().person;
+    recorder.event(poserecEffortRecord(POSEREC_SID, Date.now(), set, by, scope, value, person));
+    log('POSEREC effort by=' + by + ' scope=' + scope + ' set=' + (set == null ? '-' : set) + ' value=' + value);
+  }
+
+  // After every set stop: the rating said during the set, and the trainer's ask.
+  function closed(ev, ask) {
+    if (!gym()) return;
+    setPersons.set(ev.set, ev.person || null);
+    const v = effort.closed(ev.set);
+    if (v != null) effortEmit('self', 'set', ev.set, v);
+    if (ask) { try { if (host) host.send({ type: 'effort-ask', set: ev.set, n: ev.n, exercise: ev.exercise || null }); } catch (e) {} }
+  }
+
+  function selfEffort(p) {
+    try {
+      if (p.scope === 'session') {
+        effortEmit('self', 'session', null, p.value);
+      } else {
+        const open = recorder.state().open;
+        const r = effort.self(p.value, open ? open.set : null);
+        if (!r) { log('POSEREC effort ' + p.value + ' ignored (no set yet)'); return; }
+        if (r.pending) {
+          // Said during the set: it ends the set now, and closed() records the rating.
+          const ev = recorder.stop('effort', Date.now());
+          log('POSEREC set stop ' + describe(ev) + ' reason=effort dur=' + (ev.durMs / 1000).toFixed(1) + 's frames=' + ev.frames);
+          closed(ev, true);
+          showSet();
+        } else {
+          effortEmit('self', 'set', r.set, p.value);
+        }
+      }
+      if (host) host.effort(poserecEffortText(p.scope, p.value));
+      flash(poserecEffortText(p.scope, p.value));
+    } catch (e) {}
+  }
+
+  // Large confirmation on the pop-out (the host ignores it off the gym role).
+  function flash(text) {
+    try { if (host && host.flash) host.flash(text); } catch (e) {}
+  }
+
+  // The pop-out's status line (person and open set), sent only on a change.
+  let statusShown = null;
+  function showPerson() {
+    try {
+      const st = recorder.state();
+      const text = poserecStatusText(st.person, st.open);
+      if (text === statusShown) return;
+      statusShown = text;
+      if (host && host.person) host.person(text);
+    } catch (e) {}
+  }
+
+  // "session start <name>": close any open set, then the new person, n from 1.
+  function personStart(p) {
+    try {
+      const now = Date.now();
+      const ev = recorder.stop('person', now);
+      if (ev) {
+        log('POSEREC set stop ' + describe(ev) + ' reason=person dur=' + (ev.durMs / 1000).toFixed(1) + 's frames=' + ev.frames);
+        closed(ev, true);
+      }
+      recorder.setPerson(p.person);
+      recorder.event(poserecPersonRecord(POSEREC_SID, now, p.person));
+      try { localStorage.setItem(POSEREC_PERSON_KEY, poserecPersonSave(p.person, poserecDay(now))); } catch (e) {}
+      log('POSEREC person ' + p.person + ' (set count restarts at 1)');
+      flash(poserecPersonText(p.person));
+      showSet();
+    } catch (e) {}
+  }
+
+  // A person said earlier today survives a reload (no new person record).
+  function personRestore() {
+    try {
+      let raw = null;
+      try { raw = localStorage.getItem(POSEREC_PERSON_KEY); } catch (e) {}
+      const person = poserecPersonRestore(raw, poserecDay(Date.now()), POSEREC_PEOPLE);
+      if (!person) return;
+      recorder.setPerson(person);
+      log('POSEREC person ' + person + ' (restored from earlier today)');
+      showPerson();
+    } catch (e) {}
+  }
+
+  // {type:'effort', set, value} from the trainer's tap.
+  function remote(msg) {
+    try {
+      if (!gym() || !msg || msg.type !== 'effort') return;
+      const v = poserecEffortValue(msg.value);
+      if (!v || !Number.isSafeInteger(msg.set) || !effort.known(msg.set)) {
+        log('POSEREC effort from trainer ignored (set=' + String(msg.set).slice(0, 12) + ': not a closed set, or a bad value)');
+        return;
+      }
+      effortEmit('trainer', 'set', msg.set, v);
+    } catch (e) {}
+  }
+
+  // A lone exercise word right after a bare "set start" (see POSEREC_NAME_MS).
+  function heard(text) {
+    try {
+      const ex = poserecExerciseWord(POSEREC_EXERCISES, text);
+      if (!ex) return;
+      const s = recorder.name(ex, Date.now());
+      if (!s) return;
+      log('POSEREC set named ' + ex + ' set=' + s.set + ' n=' + s.n);
+      flash(poserecSetFlash(s));
+      showSet();
+    } catch (e) {}
+  }
+
+  function showSet() {
+    const s = recorder.state().open;
+    note(s ? 'set ' + (s.exercise || '') + ' ' + poserecClock(Date.now() - s.t) : '');
+    showPerson();
+  }
+
+  function describe(ev) {
+    return (ev.exercise || '(no exercise)') + ' set=' + ev.set + ' n=' + ev.n;
+  }
+
+  function label(entry) {
+    try {
+      const now = Date.now();
+      if (entry.action === 'start') {
+        const r = recorder.start(entry.exercise, now);
+        if (r.ended) log('POSEREC set stop ' + describe(r.ended) + ' reason=restart dur=' + (r.ended.durMs / 1000).toFixed(1) + 's frames=' + r.ended.frames);
+        if (r.ended) closed(r.ended, true);
+        log('POSEREC set start ' + describe(r.event) + ' pre=' + r.pre);
+        flash(poserecSetFlash(r.event));
+      } else {
+        const ev = recorder.stop('voice', now);
+        log(ev ? 'POSEREC set stop ' + describe(ev) + ' reason=voice dur=' + (ev.durMs / 1000).toFixed(1) + 's frames=' + ev.frames
+          : 'POSEREC set stop ignored (no open set)');
+        if (ev) closed(ev, true);
+        if (ev) flash('Set ' + ev.n + ' done');
+      }
+      showSet();
+    } catch (e) {}
+  }
+
+  function stateTick() {
+    try {
+      const ev = recorder.tick(Date.now());
+      if (ev) log('POSEREC set stop ' + describe(ev) + ' reason=auto dur=' + (ev.durMs / 1000).toFixed(1) + 's frames=' + ev.frames);
+      if (ev) closed(ev, true);
+      showSet();
+    } catch (e) {}
+  }
+
+  function post(records, keepalive) {
+    const ctl = (!keepalive && typeof AbortController === 'function') ? new AbortController() : null;
+    const timer = ctl ? setTimeout(() => { try { ctl.abort(); } catch (e) {} }, POSEREC_TIMEOUT_MS) : null;
+    return fetch(POSEREC_SINK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': keepalive ? 'text/plain' : 'application/json' },
+      body: poserecBody(POSEREC_SID, records),
+      keepalive: !!keepalive,
+      credentials: 'omit',
+      cache: 'no-store',
+      signal: ctl ? ctl.signal : undefined,
+    }).then((r) => {
+      if (timer) clearTimeout(timer);
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+    }, (e) => {
+      if (timer) clearTimeout(timer);
+      throw e;
+    });
+  }
+
+  function sinkOk() {
+    if (failing) {
+      log('POSEREC sink recovered after ' + failCount + ' failed attempt(s); ' + (dropped - droppedAtFail) + ' record(s) dropped while down');
+    }
+    failing = false; failCount = 0; backoff = 0; nextAt = 0;
+  }
+
+  function sinkFail(e) {
+    failCount++;
+    backoff = backoff ? Math.min(backoff * 2, POSEREC_BACKOFF_MAX_MS) : POSEREC_BACKOFF_MIN_MS;
+    nextAt = Date.now() + backoff;
+    if (!failing) {
+      failing = true;
+      droppedAtFail = dropped;
+      log('POSEREC sink unreachable (' + String((e && e.message) || e).slice(0, 80) + ') — queue=' + queue.length +
+        ', retrying every ' + (POSEREC_BACKOFF_MIN_MS / 1000) + '-' + (POSEREC_BACKOFF_MAX_MS / 1000) + 's');
+    }
+  }
+
+  async function sinkTick() {
+    try {
+      if (busy || !queue.length || Date.now() < nextAt) return;
+      busy = true;
+      try {
+        for (let n = 0; n < POSEREC_POSTS_PER_TICK && queue.length; n++) {
+          const records = poserecTakeBatch(queue, POSEREC_MAX_RECORDS, POSEREC_MAX_BYTES, false);
+          const droppedBefore = dropped;
+          await post(records, false);
+          // the cap may have trimmed the front of the queue while the POST was in flight
+          const done = Math.max(0, records.length - (dropped - droppedBefore));
+          queue = queue.slice(done);
+          sent += records.length;
+          sinkOk();
+        }
+      } catch (e) {
+        sinkFail(e);
+      } finally {
+        busy = false;
+      }
+    } catch (e) { /* the recorder must never affect the call */ }
+  }
+
+  function pagehide() {
+    try {
+      const open = recorder.state().open;
+      const ev = open ? recorder.stop('pagehide', Date.now()) : null;
+      if (ev) closed(ev, false);
+      if (!queue.length) return;
+      post(poserecTakeBatch(queue, POSEREC_MAX_RECORDS, POSEREC_KEEPALIVE_BYTES, true), true).catch(() => {});
+    } catch (e) { /* never affect unload */ }
+  }
+
+  function status() {
+    return Object.assign({ sink: POSEREC_SINK_URL, sid: POSEREC_SID, consumed, persons, queued: queue.length,
+      sent, dropped, failing, failCount, exercises: POSEREC_EXERCISES.slice(), effort: effort.state() }, recorder.state());
+  }
+
+  // Phrases another module already owns (e.g. ?voiceword=set) are left alone.
+  if (window.__VOICECMD__) {
+    const taken = window.__VOICECMD__.status().phrases;
+    poserecPhrases(POSEREC_EXERCISES).forEach((p) => {
+      if (taken.indexOf(p.phrase) >= 0) { log('POSEREC phrase "' + p.phrase + '" already registered, skipped'); return; }
+      window.__VOICECMD__.register({ phrase: p.phrase, action: () => label(p) });
+    });
+    if (window.__VOICECMD__.listen) window.__VOICECMD__.listen(heard);
+    if (gym()) {
+      poserecEffortPhrases().forEach((p) => {
+        if (taken.indexOf(p.phrase) >= 0) { log('POSEREC phrase "' + p.phrase + '" already registered, skipped'); return; }
+        window.__VOICECMD__.register({ phrase: p.phrase, action: () => selfEffort(p) });
+      });
+      poserecPersonPhrases(POSEREC_PEOPLE).forEach((p) => {
+        if (taken.indexOf(p.phrase) >= 0) { log('POSEREC phrase "' + p.phrase + '" already registered, skipped'); return; }
+        window.__VOICECMD__.register({ phrase: p.phrase, action: () => personStart(p) });
+      });
+    }
+  }
+  if (gym()) personRestore();
+
+  window.__POSEREC__ = Object.freeze({ consume, status, remote });
+  try {
+    setInterval(stateTick, 1000);
+    setInterval(sinkTick, POSEREC_TICK_MS);
+    window.addEventListener('pagehide', pagehide);
+  } catch (e) {}
+  log('POSEREC on: sink=' + POSEREC_SINK_URL + ' sid=' + POSEREC_SID + ' exercises=' + POSEREC_EXERCISES.join(',') + ' effort=' + (gym() ? 'on' : 'off'));
 })();
 </script>
 <script>

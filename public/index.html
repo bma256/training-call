@@ -420,7 +420,7 @@
   // away on pan; auto-framing is separately HELD.
   const AF_FORCE_FALLBACK = { t: true, p: false };
   let afInvUnconfirmed = false;  // set true when an unrecognised camera is adopted
-  console.log('[build] index-effort-f 2026-11-11 — inv=' +
+  console.log('[build] index-effortfix 2026-11-12 — inv=' +
     (params.get('inv') || '(none)') + (AF_FORCE_MODE ? ' (order-keyed: index0=Door, index1=Rack)' : ''));
 
   // Google's public STUN servers — free, no signup, fine for most home networks.
@@ -489,6 +489,15 @@
   const SIGNAL_RETRY_MAX_EXPONENT = 6;
   let rebuildingPc = false; // guards attemptIceRestart() vs rebuildPeerConnection() from racing each other
   let joinOfferSent = false; // guards against a duplicate offer from a 'request-offer' arriving mid-join
+  // CONTROL MODULE: what the in-flight join offer was -- 'fresh' (new pc, new
+  // control channel) or 'ice-restart' (the old pc, whose channel a brand-new
+  // remote pc can never receive). A 'request-offer' overrides only the latter.
+  let joinOfferKind = null;
+  // CONTROL MODULE: every offer carries an id (oid) that the answer echoes, so
+  // an answer to an offer from a pc we have since replaced is ignored. A peer
+  // that does not echo it (older page) is answered as before.
+  let lastOfferId = null;
+  let pcGen = 0;            // counts peer connections, for the CONTROL log lines
   let hiddenAt = 0; // timestamp of the last visibilitychange -> hidden, for the forced-reconnect-after-hidden check
   const FORCE_RECONNECT_HIDDEN_MS = 10000;
 
@@ -713,14 +722,17 @@
         signalRetryAttempt = 0;
         amCaller = (msg.peers === 2); // deterministic every join -- at most one side ever sees peers===2 for a given pairing
         joinOfferSent = false; // fresh join cycle -- reset the double-offer guard
+        joinOfferKind = null;
         if (amCaller) {
           if (!pc) {
             joinOfferSent = true; // set BEFORE the awaits -- a 'request-offer' can arrive mid-await
+            joinOfferKind = 'fresh';
             await createPeerConnection();
             await makeOffer();
           } else if (pc.connectionState !== 'connected' && pc.connectionState !== 'connecting') {
             afdiag('SIGNAL joined (rejoin) — pc state=' + pc.connectionState + ' — renegotiating');
             joinOfferSent = true; // set BEFORE the await, same reason
+            joinOfferKind = 'ice-restart';
             await attemptIceRestart();
           }
           // else: pc looks connected/connecting -- leave it alone for now; if the other
@@ -732,13 +744,21 @@
         // (torn down by an earlier 'peer-left' on its end) and our own pc merely LOOKED
         // connected above, so we never offered. Rebuild for real instead of waiting for
         // organic ICE failure detection.
-        afdiag('SIGNAL request-offer received — amCaller=' + amCaller + ' pc=' + (pc ? pc.connectionState : 'null') + ' joinOfferSent=' + joinOfferSent);
+        afdiag('SIGNAL request-offer received — amCaller=' + amCaller + ' pc=' + (pc ? pc.connectionState : 'null') + ' joinOfferSent=' + joinOfferSent +
+          (joinOfferKind ? ' kind=' + joinOfferKind : '') + (msg.reason ? ' reason=' + msg.reason : ''));
         if (!amCaller) {
           afdiag('SIGNAL request-offer ignored — not the caller');
-        } else if (joinOfferSent) {
+        } else if (msg.reason === 'control-missing') {
+          // CONTROL MODULE: the other side has a connected pc but no control channel.
+          controlRecover('peer request');
+        } else if (joinOfferSent && joinOfferKind !== 'ice-restart') {
           afdiag('SIGNAL request-offer ignored — an offer for this join is already in flight');
         } else {
+          // CONTROL MODULE: an ICE restart of our old pc cannot give the other
+          // side's brand-new pc a control channel; rebuild instead.
+          if (joinOfferSent) afdiag('SIGNAL request-offer — the offer in flight was an ICE restart of the old pc; rebuilding');
           joinOfferSent = true;
+          joinOfferKind = 'fresh';
           await rebuildPeerConnection('request-offer');
         }
       } else if (msg.type === 'peer-joined') {
@@ -770,13 +790,27 @@
           teardownPeerConnection();
           amCaller = wasCaller;
         }
+        // CONTROL MODULE: an offer from a different peer session (the other
+        // side rebuilt its pc) gets a fresh pc here too, so its new control
+        // channel arrives; an ICE restart keeps its session id and is unaffected.
+        if (pc && pc.remoteDescription && controlSdpSession(msg.sdp) &&
+            controlSdpSession(msg.sdp) !== controlSdpSession(pc.remoteDescription.sdp)) {
+          afdiag('SIGNAL offer from a new peer session — resetting before answering');
+          const wasCaller = amCaller;
+          teardownPeerConnection();
+          amCaller = wasCaller;
+        }
         if (!pc) await createPeerConnection();
         await pc.setRemoteDescription(new RTCSessionDescription(msg));
         await flushPendingCandidates();
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
-        send({ type: 'answer', sdp: answer.sdp });
+        send(msg.oid ? { type: 'answer', sdp: answer.sdp, oid: msg.oid } : { type: 'answer', sdp: answer.sdp });
       } else if (msg.type === 'answer') {
+        if (msg.oid && lastOfferId && msg.oid !== lastOfferId) {
+          afdiag('SIGNAL answer ignored — it answers an offer from a pc since replaced');   // CONTROL MODULE
+          return;
+        }
         afdiag('SIGNAL answer received');
         await pc.setRemoteDescription(new RTCSessionDescription(msg));
         await flushPendingCandidates();
@@ -886,6 +920,7 @@
 
   async function createPeerConnection() {
     pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+    pcGen++;   // CONTROL MODULE
 
     localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
 
@@ -965,7 +1000,8 @@
     try {
       const offer = await pc.createOffer({ iceRestart: true });
       await pc.setLocalDescription(offer);
-      send({ type: 'offer', sdp: offer.sdp });
+      lastOfferId = controlOfferId();
+      send({ type: 'offer', sdp: offer.sdp, oid: lastOfferId });
     } catch (e) {
       afdiag('ICE RESTART error — ' + (e && e.message));
       // If this attempt fails to even start, the next state-change event
@@ -1014,7 +1050,8 @@
   async function makeOffer() {
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
-    send({ type: 'offer', sdp: offer.sdp });
+    lastOfferId = controlOfferId();
+    send({ type: 'offer', sdp: offer.sdp, oid: lastOfferId });
   }
 
   function teardownPeerConnection() {
@@ -1373,8 +1410,13 @@
   const camSwitchOverlay = document.getElementById('camSwitchOverlay');
 
   function setupControlChannel() {
-    controlChannel.onopen = () => { sendCameraList(); sharedWidgetsOnOpen(); };  // STOPWATCH MODULE: shared widgets resync on every open
+    const gen = pcGen;   // CONTROL MODULE: which pc this channel belongs to, for the log lines
+    controlChannel.onopen = () => {
+      try { afdiag('CONTROL channel open pc=' + gen); } catch (e) {}
+      sendCameraList(); sharedWidgetsOnOpen();   // STOPWATCH MODULE: shared widgets resync on every open
+    };
     controlChannel.onclose = () => {
+      try { afdiag('CONTROL channel closed pc=' + gen); } catch (e) {}
       camSwitchOverlay.hidden = true;
       camSwitchOverlay.innerHTML = '';
     };
@@ -1405,6 +1447,67 @@
       }
     };
   }
+
+  // ===== CONTROL MODULE: missing control channel watchdog ===============
+  // A pc that is connected while its control channel is not open (camera
+  // list, stopwatch sync, effort asks, trainer log lines all ride on it) is
+  // logged after CONTROL_MISSING_MS and recovered: the caller rebuilds its pc;
+  // the callee asks the caller for that with request-offer (reason
+  // control-missing). At most one attempt per CONTROL_RETRY_MS on each side.
+  // Plus helpers for offer ids and SDP session ids (see SIGNAL above).
+  const CONTROL_MISSING_MS = 8000;
+  const CONTROL_RETRY_MS = 30000;
+  let controlMissingSince = 0;
+  let controlLastRecover = 0;
+
+  // The session id from the SDP o= line; the same for every offer from one pc.
+  function controlSdpSession(sdp) {
+    const m = /^o=\S+ (\d+) /m.exec(String(sdp || ''));
+    return m ? m[1] : null;
+  }
+
+  function controlOfferId() {
+    return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  }
+
+  function controlChannelOpen() {
+    return !!(controlChannel && controlChannel.readyState === 'open');
+  }
+
+  // Shared by the watchdog and a peer's request; refuses within CONTROL_RETRY_MS.
+  function controlRecover(why) {
+    const now = Date.now();
+    if (now - controlLastRecover < CONTROL_RETRY_MS) {
+      afdiag('CONTROL recover skipped (' + why + ') — last attempt ' + Math.round((now - controlLastRecover) / 1000) + 's ago');
+      return;
+    }
+    if (controlChannelOpen()) { afdiag('CONTROL recover skipped (' + why + ') — channel open here'); return; }
+    controlLastRecover = now;
+    if (amCaller) {
+      afdiag('CONTROL recover (' + why + ') — rebuilding the pc');
+      joinOfferSent = true;
+      joinOfferKind = 'fresh';
+      rebuildPeerConnection('control-missing');
+    } else {
+      afdiag('CONTROL recover (' + why + ') — asking the other side for a fresh offer');
+      send({ type: 'request-offer', reason: 'control-missing' });
+    }
+  }
+
+  function controlWatchTick() {
+    try {
+      if (!pc || pc.connectionState !== 'connected' || controlChannelOpen()) { controlMissingSince = 0; return; }
+      const now = Date.now();
+      if (!controlMissingSince) { controlMissingSince = now; return; }
+      if (now - controlMissingSince < CONTROL_MISSING_MS) return;
+      if (now - controlLastRecover < CONTROL_RETRY_MS) return;
+      afdiag('CONTROL channel missing — pc=' + pcGen + ' connected for ' + Math.round((now - controlMissingSince) / 1000) +
+        's, channel ' + (controlChannel ? controlChannel.readyState : 'none'));
+      controlRecover('watchdog');
+    } catch (e) {}
+  }
+  setInterval(controlWatchTick, 1000);
+  // ===== CONTROL MODULE END ==============================================
 
   function sendCameraList() {
     if (!controlChannel || controlChannel.readyState !== 'open') return;
@@ -2836,11 +2939,20 @@
     effortAskPlace();
   }
 
+  // Each reason an ask is dropped is logged once per page load.
+  const effortAskDropped = {};
+  function effortAskDrop(why) {
+    if (effortAskDropped[why]) return;
+    effortAskDropped[why] = true;
+    try { afdiag('EFFORT ask ignored: ' + why + ' (logged once)'); } catch (e) {}
+  }
+
   function effortAskReceive(msg) {
     try {
-      if (!telemIsTrainer() || !mainClock) return;   // trainer main window only
+      if (!telemIsTrainer()) { effortAskDrop('not the trainer role'); return; }   // trainer main window only
+      if (!mainClock) { effortAskDrop('no main clock'); return; }
       const ask = effortAskParse(msg);
-      if (!ask) return;
+      if (!ask) { effortAskDrop('bad message'); return; }
       effortAskClose(effortAsk ? 'replaced' : null);
       if (!document.getElementById('effortAskStyle')) {
         const style = document.createElement('style');
@@ -2869,7 +2981,9 @@
       });
       effortAskPlace();
       afdiag('EFFORT ask shown set=' + ask.n + ' exercise=' + (ask.exercise || '(none)'));
-    } catch (e) {}
+    } catch (e) {
+      try { afdiag('EFFORT ask failed: ' + String((e && e.message) || e).slice(0, 120)); } catch (e2) {}
+    }
   }
   // ===== EFFORT MODULE (trainer side) END ================================
   // ===== SELF-VIEW POPOUT MODULE END =====================================
@@ -3485,7 +3599,7 @@
   try { window.addEventListener('pagehide', afdiagFlush); } catch (e) {}
   try { window.addEventListener('beforeunload', afdiagFlush); } catch (e) {}
 
-  afdiag('PAGE LOAD — [build] index-effort-f 2026-11-11 — inv=' +
+  afdiag('PAGE LOAD — [build] index-effortfix 2026-11-12 — inv=' +
     (params.get('inv') || '(none)') +
     (AF_FORCE_MODE ? ' (order-keyed: index0=Door, index1=Rack)' : ''));
   // ===== AF DIAGNOSTIC LOGGER: JS END =======================================
@@ -4473,7 +4587,7 @@
 </script>
 <script>
 /* =======================================================================
-   POSEREC — landmark recorder. Test build index-effort-f 2026-11-11.
+   POSEREC — landmark recorder. Test build index-effortfix 2026-11-12.
    -----------------------------------------------------------------------
    - ?poserec=1 to enable; fully dormant otherwise (no globals, no timers,
      no phrases registered).
@@ -4501,7 +4615,9 @@
    - EFFORT (gym role only): "effort one".."effort ten" said during a set
      closes that set at once (reason=effort) and rates it; said between sets
      it rates the last closed set. "session effort one".."ten" rates the whole
-     session. Every set stop sends {type:'effort-ask', set, n,
+     session. A split result, "effort" then a lone "one".."ten" as the next
+     final result within POSEREC_JOIN_MS, counts as "effort N" (likewise
+     "session effort"), through __VOICECMD__.listen(). Every set stop sends {type:'effort-ask', set, n,
      exercise} to the trainer, whose tap comes back as {type:'effort', set,
      value} (see the EFFORT MODULE in the main script). Each rating is one
      effort record plus one afdiag line. The pop-out shows the gym's own last
@@ -4670,7 +4786,6 @@
   }
 
   // "effort one".."effort ten" rate a set; "session effort one".."ten" the session.
-  // "rate N" / "session rate N" are aliases, listed after the originals.
   const POSEREC_EFFORT_WORDS = ['one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten'];
 
   function poserecEffortPhrases() {
@@ -4679,11 +4794,34 @@
       out.push({ phrase: 'effort ' + w, scope: 'set', value: i + 1 });
       out.push({ phrase: 'session effort ' + w, scope: 'session', value: i + 1 });
     });
-    POSEREC_EFFORT_WORDS.forEach((w, i) => {
-      out.push({ phrase: 'rate ' + w, scope: 'set', value: i + 1 });
-      out.push({ phrase: 'session rate ' + w, scope: 'session', value: i + 1 });
-    });
     return out;
+  }
+
+  // Split rating: Vosk sometimes hears "effort seven" as two final results,
+  // "effort" then "seven". A final result of exactly "effort" (or "session
+  // effort") waits POSEREC_JOIN_MS for the next final result; if that is
+  // exactly one number word it gives {phrase, scope, value} as if the whole
+  // phrase had been said. Any other final result ends the wait; a number with
+  // no wait does nothing. heard() gets every final result (__VOICECMD__.listen).
+  const POSEREC_JOIN_MS = 4500;
+
+  function poserecEffortJoiner(windowMs) {
+    let wait = null;   // { scope, t }
+    return {
+      heard(text, now) {
+        const said = String(text == null ? '' : text).toLowerCase().trim().split(/\s+/).join(' ');
+        if (said === 'effort' || said === 'session effort') {
+          wait = { scope: said === 'effort' ? 'set' : 'session', t: now };
+          return null;
+        }
+        const w = wait;
+        wait = null;
+        const i = POSEREC_EFFORT_WORDS.indexOf(said);
+        if (!w || i < 0 || now - w.t > windowMs) return null;
+        return { phrase: (w.scope === 'set' ? 'effort ' : 'session effort ') + said, scope: w.scope, value: i + 1 };
+      },
+      waiting: () => !!wait
+    };
   }
 
   function poserecEffortValue(v) {
@@ -4871,7 +5009,11 @@
     setPersons.set(ev.set, ev.person || null);
     const v = effort.closed(ev.set);
     if (v != null) effortEmit('self', 'set', ev.set, v);
-    if (ask) { try { if (host) host.send({ type: 'effort-ask', set: ev.set, n: ev.n, exercise: ev.exercise || null }); } catch (e) {} }
+    if (ask) {
+      let sent = false, why = 'control channel not open';
+      try { sent = !!(host && host.send({ type: 'effort-ask', set: ev.set, n: ev.n, exercise: ev.exercise || null })); } catch (e) { why = 'send failed'; }
+      if (!sent) log('POSEREC effort-ask not sent (' + why + ') set=' + ev.set + ' n=' + ev.n);
+    }
   }
 
   function selfEffort(p) {
@@ -4958,8 +5100,23 @@
     } catch (e) {}
   }
 
+  // "effort" then a lone number within POSEREC_JOIN_MS: the same as "effort N".
+  const joiner = poserecEffortJoiner(POSEREC_JOIN_MS);
+  function joinHeard(text) {
+    try {
+      if (!gym()) return;
+      const j = joiner.heard(text, Date.now());
+      if (!j) return;
+      const p = poserecEffortPhrases().find((x) => x.phrase === j.phrase);
+      if (!p) return;
+      log('POSEREC effort joined (split) value=' + p.value);
+      selfEffort(p);
+    } catch (e) {}
+  }
+
   // A lone exercise word right after a bare "set start" (see POSEREC_NAME_MS).
   function heard(text) {
+    joinHeard(text);
     try {
       const ex = poserecExerciseWord(POSEREC_EXERCISES, text);
       if (!ex) return;
